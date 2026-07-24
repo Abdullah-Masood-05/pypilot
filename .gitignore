@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Zed extension build artifacts
+/extension/target
+*.wasm
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# PyPilot runtime state that must never be committed
+/helper/.pypilot-cache/
