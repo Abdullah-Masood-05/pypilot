@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  helper:
+    name: helper (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { name: macos-x64, os: macos-13, target: x86_64-apple-darwin }
+          - { name: macos-arm64, os: macos-14, target: aarch64-apple-darwin }
+          - { name: windows-x64, os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Format check
+        run: cargo fmt --manifest-path helper/Cargo.toml -- --check
+
+      - name: Clippy
+        run: cargo clippy -p pypilot-helper --target ${{ matrix.target }} -- -D warnings
+
+      - name: Build helper
+        run: cargo build -p pypilot-helper --release --target ${{ matrix.target }}
+
+      - name: Test helper
+        run: cargo test -p pypilot-helper --target ${{ matrix.target }}
+
+  extension:
+    name: WASM shim
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (wasm)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build extension (wasm)
+        run: cargo build -p pypilot-zed --target wasm32-unknown-unknown --release

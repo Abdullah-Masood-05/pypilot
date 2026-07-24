@@ -1,0 +1,30 @@
+[
+  {
+    "label": "pypilot: doctor",
+    "command": "pypilot",
+    "args": ["doctor", "--path", "$ZED_WORKTREE_ROOT"],
+    "use_new_terminal": false,
+    "reveal": "always"
+  },
+  {
+    "label": "pypilot: setup environment",
+    "command": "pypilot",
+    "args": ["setup", "--path", "$ZED_WORKTREE_ROOT"],
+    "use_new_terminal": false,
+    "reveal": "always"
+  },
+  {
+    "label": "pypilot: check package",
+    "command": "pypilot",
+    "args": ["check", "$ZED_CUSTOM_package", "--path", "$ZED_WORKTREE_ROOT"],
+    "use_new_terminal": false,
+    "reveal": "always"
+  },
+  {
+    "label": "pypilot: fix python version",
+    "command": "pypilot",
+    "args": ["fix", "python", "--path", "$ZED_WORKTREE_ROOT"],
+    "use_new_terminal": false,
+    "reveal": "always"
+  }
+]
