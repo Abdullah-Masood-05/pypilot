@@ -1,8 +1,8 @@
 # PyPilot Cargo workspace.
 #
 # Two members:
-#   * `helper`    — native binary (`pypilot`); the editor-agnostic brain.
-#   * `extension` — Zed WASM shim (cdylib). Built for the `wasm32-*` target only,
+#   * `helper`: native binary (`pypilot`); the editor-agnostic brain.
+#   * `extension`: Zed WASM shim (cdylib). Built for the `wasm32-*` target only,
 #                   so it is intentionally NOT part of the default workspace build
 #                   set that CI runs `cargo test` over. It is still a workspace
 #                   member so `cargo build -p pypilot-zed --target wasm32-unknown-unknown`
@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
-repository = "https://github.com/OWNER/pypilot"
+repository = "https://github.com/Abdullah-Masood-05/pypilot"
 authors = ["PyPilot contributors"]
 
 [profile.release]
