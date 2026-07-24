@@ -1,0 +1,14 @@
+{
+  "info": {
+    "name": "numpy",
+    "version": "2.0.1",
+    "requires_python": ">=3.9"
+  },
+  "urls": [
+    { "filename": "numpy-2.0.1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", "packagetype": "bdist_wheel", "yanked": false },
+    { "filename": "numpy-2.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", "packagetype": "bdist_wheel", "yanked": false },
+    { "filename": "numpy-2.0.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", "packagetype": "bdist_wheel", "yanked": false },
+    { "filename": "numpy-2.0.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", "packagetype": "bdist_wheel", "yanked": false },
+    { "filename": "numpy-2.0.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", "packagetype": "bdist_wheel", "yanked": false }
+  ]
+}

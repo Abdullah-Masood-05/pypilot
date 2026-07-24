@@ -1,0 +1,46 @@
+{
+  "info": {
+    "name": "mediapipe",
+    "version": "0.10.9",
+    "requires_python": ">=3.8",
+    "summary": "MediaPipe is the simplest way for researchers and developers to build world-class ML solutions and applications for mobile, edge, cloud and the web."
+  },
+  "urls": [
+    {
+      "filename": "mediapipe-0.10.9-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "packagetype": "bdist_wheel",
+      "requires_python": ">=3.8",
+      "yanked": false
+    },
+    {
+      "filename": "mediapipe-0.10.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "packagetype": "bdist_wheel",
+      "requires_python": ">=3.8",
+      "yanked": false
+    },
+    {
+      "filename": "mediapipe-0.10.9-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "packagetype": "bdist_wheel",
+      "requires_python": ">=3.8",
+      "yanked": false
+    },
+    {
+      "filename": "mediapipe-0.10.9-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "packagetype": "bdist_wheel",
+      "requires_python": ">=3.8",
+      "yanked": false
+    },
+    {
+      "filename": "mediapipe-0.10.9-cp39-cp39-macosx_11_0_universal2.whl",
+      "packagetype": "bdist_wheel",
+      "requires_python": ">=3.8",
+      "yanked": false
+    },
+    {
+      "filename": "mediapipe-0.10.9-cp312-cp312-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "requires_python": ">=3.8",
+      "yanked": false
+    }
+  ]
+}
