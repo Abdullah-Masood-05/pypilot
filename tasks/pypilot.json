@@ -1,30 +1,33 @@
+// PyPilot task templates (F6).
+//
+// Zed extensions cannot register custom command-palette entries, so the
+// palette surface is provided through tasks: `task: spawn` lists these by label.
+//
+// Install by copying into either:
+//   * global — ~/.config/zed/tasks.json  (Windows: %APPDATA%\Zed\tasks.json)
+//   * project — <workspace>/.zed/tasks.json
+//
+// Labels mirror the F5 toast buttons so the two surfaces map 1:1:
+//   "Fix everything" → pypilot setup     (identical code path)
+//   "Show details"   → pypilot doctor    (same assessment, read-only)
 [
   {
-    "label": "pypilot: doctor",
-    "command": "pypilot",
-    "args": ["doctor", "--path", "$ZED_WORKTREE_ROOT"],
-    "use_new_terminal": false,
-    "reveal": "always"
-  },
-  {
-    "label": "pypilot: setup environment",
+    "label": "pypilot: fix everything (set up environment)",
     "command": "pypilot",
     "args": ["setup", "--path", "$ZED_WORKTREE_ROOT"],
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "save": "all",
     "reveal": "always"
   },
   {
-    "label": "pypilot: check package",
+    "label": "pypilot: show details (doctor report)",
     "command": "pypilot",
-    "args": ["check", "$ZED_CUSTOM_package", "--path", "$ZED_WORKTREE_ROOT"],
+    "args": ["doctor", "--path", "$ZED_WORKTREE_ROOT"],
+    "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
-    "reveal": "always"
-  },
-  {
-    "label": "pypilot: fix python version",
-    "command": "pypilot",
-    "args": ["fix", "python", "--path", "$ZED_WORKTREE_ROOT"],
-    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
     "reveal": "always"
   }
 ]
