@@ -116,5 +116,9 @@ pub async fn run<S: MetadataSource>(
         }
     }
 
+    // If an LSP instance is watching this workspace (e.g. the command was run
+    // from a Zed task), have it surface the same result as a toast.
+    crate::core::rescan::notify(workspace, crate::core::rescan::Kind::Doctor);
+
     Ok(())
 }

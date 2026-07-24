@@ -30,6 +30,10 @@ pub async fn run<S: MetadataSource>(
     }
     println!();
 
+    // If an LSP instance is watching this workspace (e.g. the command was run
+    // from a Zed task), have it re-scan and toast the fresh state.
+    crate::core::rescan::notify(workspace, crate::core::rescan::Kind::Setup);
+
     if summary.ok {
         println!(
             "Done. Environment at {} ({}).",

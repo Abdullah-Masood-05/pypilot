@@ -11,6 +11,7 @@ pub mod pip;
 pub mod platform;
 pub mod probe;
 pub mod project;
+pub mod rescan;
 pub mod setup;
 pub mod solver;
 pub mod uv;
