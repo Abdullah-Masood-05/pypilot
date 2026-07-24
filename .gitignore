@@ -6,6 +6,9 @@ Cargo.lock.orig
 /extension/target
 *.wasm
 
+# Local-only Claude Code settings (kept on disk, never tracked)
+.claude/
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db
