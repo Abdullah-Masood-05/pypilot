@@ -17,19 +17,23 @@
 //
 // Windows notes (speed + correctness):
 //   * If task spawn fails with "os error 193 (%1 is not a valid Win32
-//     application)", the shell resolved to a 0-byte Microsoft Store package
-//     stub. Never use a bare "pwsh.exe"; pin the App Execution Alias instead:
-//       %LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe
-//     It is a reparse point Windows retargets on every PowerShell update, so it
-//     is version-independent with zero lookup cost.
-//   * Add -NoProfile so task spawns skip the interactive profile — roughly
-//     halves shell startup when the profile runs prompt/banner tooling:
+//     application)": Zed's spawner cannot launch Microsoft Store *App
+//     Execution Aliases* (0-byte reparse points), even though plain
+//     CreateProcess can. This rules out bare "pwsh.exe" AND every
+//     WindowsApps pwsh path when PowerShell 7 came from the Store. Pin a
+//     real PE at a stable path instead. System32 PowerShell always exists,
+//     never moves, and with -NoProfile is the fastest shell spawn:
 //       "shell": {
 //         "with_arguments": {
-//           "program": "C:\\Users\\<you>\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe",
+//           "program": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 //           "args": ["-NoProfile"]
 //         }
 //       }
+//     (If PowerShell 7 was installed via MSI/winget — not the Store — then
+//     "C:\\Program Files\\PowerShell\\7\\pwsh.exe" is a real PE at a stable
+//     path and works too.)
+//   * -NoProfile matters either way: task spawns are non-interactive, so
+//     skipping the profile (prompt/banner tooling) roughly halves startup.
 [
   {
     "label": "pypilot: fix everything (set up environment)",
