@@ -9,17 +9,23 @@
 //! The button click routes to the exact same `core::setup` code the CLI uses.
 //! `workspace/executeCommand` exposes the same actions for task/code-action use.
 //!
-//! Buffer diagnostics (F4) attach here later via `did_open`/`did_save`; the
-//! scaffolding (client, state, shared source) is already in place.
+//! **CLI bridge:** a task-spawned `pypilot doctor|setup` drops a rescan request
+//! (see [`crate::core::rescan`]); a background watcher here polls it (one file
+//! `stat` per second) and re-raises the toast with fresh results. Explicit
+//! requests bypass the silence gates — the user asked, so even "all good" gets
+//! a confirmation toast.
+//!
+//! Buffer diagnostics (F4) attach here later via `did_open`/`did_save`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result as RpcResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::core::{setup, solver, Assessment, FixKind, Severity};
+use crate::core::{rescan, setup, solver, Assessment, FixKind, Severity};
 use crate::pypi::PyPiClient;
 use crate::settings::{Notifications, Settings};
 
@@ -35,28 +41,16 @@ const BTN_DETAILS: &str = "Show details";
 const BTN_IGNORE: &str = "Ignore";
 const BTN_NEVER: &str = "Never for this project";
 
-struct State {
-    root: Option<PathBuf>,
-    settings: Settings,
-}
-
 struct Backend {
     client: Client,
-    state: Mutex<State>,
+    root: Mutex<Option<PathBuf>>,
     source: PyPiClient,
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> RpcResult<InitializeResult> {
-        let root = workspace_root(&params);
-        let settings = root.as_ref().map(|r| Settings::load(r)).unwrap_or_default();
-
-        {
-            let mut state = self.state.lock().await;
-            state.root = root;
-            state.settings = settings;
-        }
+        *self.root.lock().await = workspace_root(&params);
 
         Ok(InitializeResult {
             server_info: Some(ServerInfo {
@@ -80,18 +74,28 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        // Run the onboarding scan off the init path.
-        self.onboarding_scan().await;
+        let Some(root) = self.root.lock().await.clone() else {
+            return;
+        };
+
+        // CLI → toast bridge: watch for rescan requests from task-spawned runs.
+        tokio::spawn(watch_rescan_requests(self.client.clone(), root.clone()));
+
+        // The unsolicited onboarding scan (respects the silence gates).
+        scan_and_notify(&self.client, &self.source, &root, false).await;
     }
 
     async fn execute_command(
         &self,
         params: ExecuteCommandParams,
     ) -> RpcResult<Option<serde_json::Value>> {
+        let root = self.root.lock().await.clone();
+        let Some(root) = root else { return Ok(None) };
+
         match params.command.as_str() {
-            CMD_FIX => self.run_fix().await,
-            CMD_DETAILS => self.show_details().await,
-            CMD_NEVER => self.mark_never().await,
+            CMD_FIX => run_fix(&self.client, &self.source, &root).await,
+            CMD_DETAILS => show_details(&self.client, &self.source, &root).await,
+            CMD_NEVER => mark_never(&self.client, &root).await,
             CMD_IGNORE => {} // session-only dismissal; nothing persisted.
             other => {
                 self.client
@@ -107,154 +111,171 @@ impl LanguageServer for Backend {
     }
 }
 
-impl Backend {
-    /// F5 core: assess, and toast only if something's wrong and it's allowed.
-    async fn onboarding_scan(&self) {
-        let (root, settings) = {
-            let state = self.state.lock().await;
-            (state.root.clone(), state.settings.clone())
-        };
-        let Some(root) = root else { return };
+/// Poll the workspace's rescan-request file; on change, run an explicit scan.
+/// One `stat` per second, no allocation — negligible even on battery.
+async fn watch_rescan_requests(client: Client, root: PathBuf) {
+    // Ignore any request that predates this server instance.
+    let mut last_seen = rescan::request_mtime(&root);
+    let source = PyPiClient::new();
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        // Respect F7: off / dismissed / auto-check disabled → silence.
-        if settings.notifications == Notifications::Off
+    loop {
+        tick.tick().await;
+        let current = rescan::request_mtime(&root);
+        if current.is_some() && current != last_seen {
+            last_seen = current;
+            scan_and_notify(&client, &source, &root, true).await;
+        }
+    }
+}
+
+/// The one scan → toast path shared by onboarding, the CLI bridge, and (later)
+/// any re-scan trigger. `explicit == true` means the user asked for this scan
+/// (task/CLI), so silence gates are bypassed and success is confirmed too.
+async fn scan_and_notify(client: &Client, source: &PyPiClient, root: &Path, explicit: bool) {
+    let settings = Settings::load(root);
+
+    if !explicit
+        && (settings.notifications == Notifications::Off
             || settings.dismissed
-            || !settings.auto_check_on_open
-        {
-            return;
-        }
-
-        let assessment = solver::assess(&root, &settings, &self.source).await;
-
-        // Not a Python project, or everything fine → stay silent (no toast spam).
-        if !assessment.project.is_python_project() || assessment.all_good() {
-            return;
-        }
-        // "problems-only" only suppresses info-level noise; we already gate on
-        // all_good() (which ignores Info), so any surviving toast is a problem.
-
-        let message = toast_summary(&assessment);
-        let actions = vec![
-            action(BTN_FIX),
-            action(BTN_DETAILS),
-            action(BTN_IGNORE),
-            action(BTN_NEVER),
-        ];
-
-        let severity = match assessment.worst_severity() {
-            Some(Severity::Error) => MessageType::ERROR,
-            _ => MessageType::WARNING,
-        };
-
-        let chosen = self
-            .client
-            .show_message_request(severity, message, Some(actions))
-            .await
-            .ok()
-            .flatten();
-
-        match chosen.as_ref().map(|a| a.title.as_str()) {
-            Some(BTN_FIX) => self.run_fix().await,
-            Some(BTN_DETAILS) => self.show_details().await,
-            Some(BTN_NEVER) => self.mark_never().await,
-            _ => {} // Ignore / dismissed.
-        }
+            || !settings.auto_check_on_open)
+    {
+        return;
     }
 
-    async fn run_fix(&self) {
-        let (root, settings) = {
-            let state = self.state.lock().await;
-            (state.root.clone(), state.settings.clone())
-        };
-        let Some(root) = root else { return };
+    let assessment = solver::assess(root, &settings, source).await;
 
-        self.client
-            .show_message(MessageType::INFO, "PyPilot: setting up the environment…")
-            .await;
-
-        match setup::run(&root, &settings, &self.source).await {
-            Ok(summary) if summary.ok => {
-                let py = summary
-                    .python
-                    .map(|p| format!("Python {p}"))
-                    .unwrap_or_else(|| "system interpreter".into());
-                self.client
-                    .show_message(
-                        MessageType::INFO,
-                        format!(
-                            "PyPilot: done. {} at {}. {}",
-                            py,
-                            summary.venv_path.display(),
-                            summary.why
-                        ),
-                    )
-                    .await;
-            }
-            Ok(summary) => {
-                let last = summary
-                    .steps
-                    .iter()
-                    .rev()
-                    .find(|s| !s.ok)
-                    .map(|s| format!("{}: {}", s.name, s.detail))
-                    .unwrap_or_else(|| "setup failed".into());
-                self.client
-                    .show_message(MessageType::ERROR, format!("PyPilot: {last}"))
-                    .await;
-            }
-            Err(e) => {
-                self.client
-                    .show_message(MessageType::ERROR, format!("PyPilot: setup error — {e}"))
-                    .await;
-            }
-        }
-    }
-
-    async fn show_details(&self) {
-        let (root, settings) = {
-            let state = self.state.lock().await;
-            (state.root.clone(), state.settings.clone())
-        };
-        let Some(root) = root else { return };
-
-        let assessment = solver::assess(&root, &settings, &self.source).await;
-        let report = details_markdown(&assessment);
-
-        // Write a temp report and try to open it; fall back to a message.
-        let path = std::env::temp_dir().join("pypilot-report.md");
-        if std::fs::write(&path, &report).is_ok() {
-            if let Ok(uri) = Url::from_file_path(&path) {
-                let opened = self
-                    .client
-                    .send_request::<request::ShowDocument>(ShowDocumentParams {
-                        uri,
-                        external: Some(false),
-                        take_focus: Some(true),
-                        selection: None,
-                    })
-                    .await;
-                if opened.is_ok() {
-                    return;
-                }
-            }
-        }
-        // Fallback: dump into the message surface.
-        self.client.show_message(MessageType::INFO, report).await;
-    }
-
-    async fn mark_never(&self) {
-        let root = { self.state.lock().await.root.clone() };
-        let Some(root) = root else { return };
-        if let Err(e) = Settings::mark_dismissed(&root) {
-            self.client
-                .log_message(
-                    MessageType::WARNING,
-                    format!("could not persist dismissal: {e}"),
+    if !assessment.project.is_python_project() {
+        if explicit {
+            client
+                .show_message(
+                    MessageType::INFO,
+                    "PyPilot: no Python project files found in this workspace.",
                 )
                 .await;
         }
-        // Reflect it in live state too.
-        self.state.lock().await.settings.dismissed = true;
+        return;
+    }
+
+    // Everything fine → silence for unsolicited scans, confirmation for explicit.
+    if assessment.all_good() {
+        if explicit {
+            client
+                .show_message(MessageType::INFO, all_good_summary(&assessment))
+                .await;
+        }
+        return;
+    }
+
+    let message = toast_summary(&assessment);
+    let actions = vec![
+        action(BTN_FIX),
+        action(BTN_DETAILS),
+        action(BTN_IGNORE),
+        action(BTN_NEVER),
+    ];
+
+    let severity = match assessment.worst_severity() {
+        Some(Severity::Error) => MessageType::ERROR,
+        _ => MessageType::WARNING,
+    };
+
+    let chosen = client
+        .show_message_request(severity, message, Some(actions))
+        .await
+        .ok()
+        .flatten();
+
+    match chosen.as_ref().map(|a| a.title.as_str()) {
+        Some(BTN_FIX) => run_fix(client, source, root).await,
+        Some(BTN_DETAILS) => show_details(client, source, root).await,
+        Some(BTN_NEVER) => mark_never(client, root).await,
+        _ => {} // Ignore / dismissed.
+    }
+}
+
+/// Run the full F1 bootstrap and toast the outcome. Same engine as `pypilot setup`.
+async fn run_fix(client: &Client, source: &PyPiClient, root: &Path) {
+    let settings = Settings::load(root);
+
+    client
+        .show_message(MessageType::INFO, "PyPilot: setting up the environment…")
+        .await;
+
+    match setup::run(root, &settings, source).await {
+        Ok(summary) if summary.ok => {
+            let py = summary
+                .python
+                .map(|p| format!("Python {p}"))
+                .unwrap_or_else(|| "system interpreter".into());
+            client
+                .show_message(
+                    MessageType::INFO,
+                    format!(
+                        "PyPilot: done. {} at {}. {}",
+                        py,
+                        summary.venv_path.display(),
+                        summary.why
+                    ),
+                )
+                .await;
+        }
+        Ok(summary) => {
+            let last = summary
+                .steps
+                .iter()
+                .rev()
+                .find(|s| !s.ok)
+                .map(|s| format!("{}: {}", s.name, s.detail))
+                .unwrap_or_else(|| "setup failed".into());
+            client
+                .show_message(MessageType::ERROR, format!("PyPilot: {last}"))
+                .await;
+        }
+        Err(e) => {
+            client
+                .show_message(MessageType::ERROR, format!("PyPilot: setup error — {e}"))
+                .await;
+        }
+    }
+}
+
+/// Generate the markdown report, write it to a temp file, and open it in the
+/// editor; falls back to a plain message if the client can't show documents.
+async fn show_details(client: &Client, source: &PyPiClient, root: &Path) {
+    let settings = Settings::load(root);
+    let assessment = solver::assess(root, &settings, source).await;
+    let report = details_markdown(&assessment);
+
+    let path = std::env::temp_dir().join("pypilot-report.md");
+    if std::fs::write(&path, &report).is_ok() {
+        if let Ok(uri) = Url::from_file_path(&path) {
+            let opened = client
+                .send_request::<request::ShowDocument>(ShowDocumentParams {
+                    uri,
+                    external: Some(false),
+                    take_focus: Some(true),
+                    selection: None,
+                })
+                .await;
+            if opened.is_ok() {
+                return;
+            }
+        }
+    }
+    client.show_message(MessageType::INFO, report).await;
+}
+
+/// Persist "Never for this project" (F5 dismissal).
+async fn mark_never(client: &Client, root: &Path) {
+    if let Err(e) = Settings::mark_dismissed(root) {
+        client
+            .log_message(
+                MessageType::WARNING,
+                format!("could not persist dismissal: {e}"),
+            )
+            .await;
     }
 }
 
@@ -262,6 +283,25 @@ fn action(title: &str) -> MessageActionItem {
     MessageActionItem {
         title: title.to_string(),
         properties: Default::default(),
+    }
+}
+
+/// Positive confirmation for explicit scans, still stating the why.
+fn all_good_summary(a: &Assessment) -> String {
+    let venv = a
+        .probes
+        .venv
+        .as_ref()
+        .and_then(|v| v.python)
+        .map(|p| format!("Python {p} venv"))
+        .unwrap_or_else(|| "environment".into());
+    match &a.compat {
+        Some(compat) => format!(
+            "PyPilot: everything looks good — {} is compatible (dependencies support {}).",
+            venv,
+            compat.intersection.to_range_string()
+        ),
+        None => format!("PyPilot: everything looks good — {} in place.", venv),
     }
 }
 
@@ -390,10 +430,7 @@ pub fn run_stdio() {
         let stdout = tokio::io::stdout();
         let (service, socket) = LspService::new(|client| Backend {
             client,
-            state: Mutex::new(State {
-                root: None,
-                settings: Settings::default(),
-            }),
+            root: Mutex::new(None),
             source: PyPiClient::new(),
         });
         Server::new(stdin, stdout, socket).serve(service).await;
