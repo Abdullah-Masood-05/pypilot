@@ -1,0 +1,39 @@
+id = "pypilot"
+name = "PyPilot"
+version = "0.1.0"
+schema_version = 1
+authors = ["PyPilot contributors"]
+description = "Sets up Python environments and resolves version/hardware compatibility — deterministic, no AI."
+repository = "https://github.com/Abdullah-Masood-05/pypilot"
+
+# --- Language server registration -------------------------------------------
+# The native `pypilot` helper is registered as a language server for Python.
+# Zed launches `pypilot lsp` and speaks stdio LSP with it (see helper/src/lsp).
+[language_servers.pypilot]
+name = "PyPilot"
+languages = ["Python"]
+
+# --- Capabilities -----------------------------------------------------------
+# The shim must download the platform-matching helper release asset from GitHub
+# and then execute it. Both actions are sandboxed and must be declared.
+
+# Fetch helper binaries (and, transitively, nothing else) from GitHub releases.
+[[capabilities]]
+kind = "download_file"
+host = "github.com"
+path = ["Abdullah-Masood-05", "pypilot", "**"]
+
+# Fetch the release *metadata* (asset list) — GitHub serves this from a
+# separate host than the binary downloads.
+[[capabilities]]
+kind = "download_file"
+host = "objects.githubusercontent.com"
+path = ["**"]
+
+# Execute the downloaded helper. The resolved command is an absolute path to
+# the extracted `pypilot` binary, so we permit any command path here; the
+# binary itself is the one we just downloaded and verified.
+[[capabilities]]
+kind = "process:exec"
+command = "*"
+args = ["**"]

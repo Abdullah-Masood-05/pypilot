@@ -1,0 +1,17 @@
+[package]
+name = "pypilot-zed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "PyPilot Zed extension — thin WASM shim that downloads and registers the native helper."
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+# The only dependency the shim needs. Everything else lives in the native helper.
+zed_extension_api = "0.7.0"
