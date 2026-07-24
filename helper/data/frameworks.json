@@ -1,0 +1,28 @@
+{
+  "_comment": "Framework release -> supported Python range, CUDA builds, wheel index URLs. Seed snapshot; F2 expands and the refresh job overlays newer copies.",
+  "schema_version": 1,
+  "frameworks": {
+    "torch": {
+      "index_urls": {
+        "cpu": "https://download.pytorch.org/whl/cpu",
+        "cu118": "https://download.pytorch.org/whl/cu118",
+        "cu121": "https://download.pytorch.org/whl/cu121",
+        "cu124": "https://download.pytorch.org/whl/cu124"
+      },
+      "releases": [
+        { "version": "2.2.0", "python": ">=3.8,<3.12", "cuda_builds": ["cpu", "cu118", "cu121"] },
+        { "version": "2.3.0", "python": ">=3.8,<3.13", "cuda_builds": ["cpu", "cu118", "cu121"] },
+        { "version": "2.4.0", "python": ">=3.8,<3.13", "cuda_builds": ["cpu", "cu118", "cu121", "cu124"] }
+      ]
+    },
+    "tensorflow": {
+      "index_urls": {
+        "default": "https://pypi.org/simple"
+      },
+      "releases": [
+        { "version": "2.15.0", "python": ">=3.9,<3.12", "cuda_builds": ["bundled"] },
+        { "version": "2.16.1", "python": ">=3.9,<3.13", "cuda_builds": ["bundled"] }
+      ]
+    }
+  }
+}

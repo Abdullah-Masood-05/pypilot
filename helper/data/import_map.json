@@ -1,0 +1,27 @@
+{
+  "_comment": "Import name -> PyPI package name. Seed from the pipreqs ecosystem; F4 consumes this. NEVER auto-install a guessed name; always show the resolved package (typosquatting defense).",
+  "schema_version": 1,
+  "map": {
+    "cv2": "opencv-python",
+    "PIL": "pillow",
+    "sklearn": "scikit-learn",
+    "skimage": "scikit-image",
+    "yaml": "pyyaml",
+    "bs4": "beautifulsoup4",
+    "np": "numpy",
+    "mpl_toolkits": "matplotlib",
+    "matplotlib": "matplotlib",
+    "google.protobuf": "protobuf",
+    "dotenv": "python-dotenv",
+    "dateutil": "python-dateutil",
+    "OpenSSL": "pyopenssl",
+    "serial": "pyserial",
+    "Crypto": "pycryptodome",
+    "win32api": "pywin32",
+    "mediapipe": "mediapipe",
+    "torch": "torch",
+    "tensorflow": "tensorflow",
+    "onnxruntime": "onnxruntime",
+    "open3d": "open3d"
+  }
+}

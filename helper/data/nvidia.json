@@ -1,0 +1,18 @@
+{
+  "_comment": "NVIDIA driver -> max supported CUDA runtime. Seed snapshot; F2 expands. Rule: wheels bundle their own CUDA runtime, so only the DRIVER floor matters (drivers are backwards compatible).",
+  "schema_version": 1,
+  "drivers": [
+    { "min_driver": "450.80.02", "max_cuda": "11.0" },
+    { "min_driver": "470.57.02", "max_cuda": "11.4" },
+    { "min_driver": "510.39.01", "max_cuda": "11.6" },
+    { "min_driver": "515.43.04", "max_cuda": "11.7" },
+    { "min_driver": "520.61.05", "max_cuda": "11.8" },
+    { "min_driver": "525.60.13", "max_cuda": "12.0" },
+    { "min_driver": "530.30.02", "max_cuda": "12.1" },
+    { "min_driver": "535.54.03", "max_cuda": "12.2" },
+    { "min_driver": "545.23.06", "max_cuda": "12.3" },
+    { "min_driver": "550.54.14", "max_cuda": "12.4" },
+    { "min_driver": "555.42.02", "max_cuda": "12.5" },
+    { "min_driver": "560.28.03", "max_cuda": "12.6" }
+  ]
+}
