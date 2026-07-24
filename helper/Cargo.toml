@@ -1,0 +1,52 @@
+[package]
+name = "pypilot-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "PyPilot native helper: environment probing, PyPI metadata engine, and LSP server."
+
+# The produced executable is `pypilot` regardless of the crate name, because the
+# WASM shim and every task template invoke `pypilot <mode>`.
+[[bin]]
+name = "pypilot"
+path = "src/main.rs"
+
+[lib]
+name = "pypilot"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime — shared by the LSP server and the CLI modes (which spin up a
+# runtime so probes fan out concurrently).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "io-util", "fs", "time"] }
+
+# LSP.
+tower-lsp = "0.20"
+
+# HTTP — rustls only, so no OpenSSL is needed on any CI target.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+
+# Serialization / config formats.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Archive extraction for the managed uv download.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+
+# Concurrency helpers (join_all for fanning out PyPI lookups).
+futures = "0.3"
+
+# Errors, dirs, misc.
+anyhow = "1"
+thiserror = "2"
+directories = "5"
+
+[dev-dependencies]
+# Tests are fully offline; fixtures are recorded PyPI JSON responses.
+tokio = { version = "1", features = ["rt", "macros"] }
