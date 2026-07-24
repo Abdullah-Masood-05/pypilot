@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "PyPilot Zed extension — thin WASM shim that downloads and registers the native helper."
+description = "Zed shim for PyPilot. Downloads the helper binary for your platform and registers it as a Python language server."
 
 [lib]
 crate-type = ["cdylib"]

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "PyPilot native helper: environment probing, PyPI metadata engine, and LSP server."
+description = "Works out which Python version a project's dependencies can run on, then builds the venv. Runs as a CLI or an LSP server."
 
 # The produced executable is `pypilot` regardless of the crate name, because the
 # WASM shim and every task template invoke `pypilot <mode>`.
@@ -19,14 +19,14 @@ name = "pypilot"
 path = "src/lib.rs"
 
 [dependencies]
-# Async runtime — shared by the LSP server and the CLI modes (which spin up a
+# Async runtime, shared by the LSP server and the CLI modes (which spin up a
 # runtime so probes fan out concurrently).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-std", "io-util", "fs", "time"] }
 
 # LSP.
 tower-lsp = "0.20"
 
-# HTTP — rustls only, so no OpenSSL is needed on any CI target.
+# HTTP. rustls only, so no OpenSSL is needed on any CI target.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 
 # Serialization / config formats.
