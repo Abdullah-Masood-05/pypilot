@@ -11,16 +11,25 @@
 //   "Fix everything" → pypilot setup   (identical code path)
 //   "Show details"   → pypilot doctor  (same assessment, read-only)
 //
-// Note: we deliberately pass NO `--path`. Zed sets `cwd` to the worktree root and
-// pypilot defaults to the current directory, which avoids the shell splitting a
-// path containing spaces into multiple arguments.
+// We deliberately pass NO `--path`: Zed sets `cwd` to the worktree root and
+// pypilot defaults to the current directory, so paths containing spaces can
+// never be split by shell word-splitting.
 //
-// Windows gotcha: if `task: spawn` fails with
-//   "IOError: %1 is not a valid Win32 application. (os error 193)"
-// Zed resolved the system shell to the Microsoft Store PowerShell *App Execution
-// Alias* (a 0-byte stub that CreateProcess cannot run). Pin a real shell by adding
-// to each task:
-//   "shell": { "program": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" }
+// Windows notes (speed + correctness):
+//   * If task spawn fails with "os error 193 (%1 is not a valid Win32
+//     application)", the shell resolved to a 0-byte Microsoft Store package
+//     stub. Never use a bare "pwsh.exe"; pin the App Execution Alias instead:
+//       %LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe
+//     It is a reparse point Windows retargets on every PowerShell update, so it
+//     is version-independent with zero lookup cost.
+//   * Add -NoProfile so task spawns skip the interactive profile — roughly
+//     halves shell startup when the profile runs prompt/banner tooling:
+//       "shell": {
+//         "with_arguments": {
+//           "program": "C:\\Users\\<you>\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe",
+//           "args": ["-NoProfile"]
+//         }
+//       }
 [
   {
     "label": "pypilot: fix everything (set up environment)",
