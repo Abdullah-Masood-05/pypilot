@@ -3,7 +3,7 @@ name = "PyPilot"
 version = "0.1.0"
 schema_version = 1
 authors = ["PyPilot contributors"]
-description = "Sets up Python environments and resolves version/hardware compatibility — deterministic, no AI."
+description = "Creates Python virtual environments on the interpreter version your dependencies actually support, and names the package that set the limit. It reads wheel tags and requires_python from PyPI, so a library with no wheel for your Python is caught before the install fails. Runs on uv by default, with a pip mode, and answers from package metadata rather than a language model."
 repository = "https://github.com/Abdullah-Masood-05/pypilot"
 
 # --- Language server registration -------------------------------------------
@@ -23,8 +23,8 @@ kind = "download_file"
 host = "github.com"
 path = ["Abdullah-Masood-05", "pypilot", "**"]
 
-# Fetch the release *metadata* (asset list) — GitHub serves this from a
-# separate host than the binary downloads.
+# Fetch the release metadata (asset list). GitHub serves this from a different
+# host than the binary downloads.
 [[capabilities]]
 kind = "download_file"
 host = "objects.githubusercontent.com"
