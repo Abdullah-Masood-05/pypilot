@@ -1,20 +1,31 @@
 // PyPilot task templates (F6).
 //
-// Zed extensions cannot register custom command-palette entries, so the
-// palette surface is provided through tasks: `task: spawn` lists these by label.
+// Zed extensions cannot register custom command-palette entries, so the palette
+// surface is provided through tasks: `task: spawn` lists these by label.
 //
 // Install by copying into either:
-//   * global — ~/.config/zed/tasks.json  (Windows: %APPDATA%\Zed\tasks.json)
+//   * global  — ~/.config/zed/tasks.json   (Windows: %APPDATA%\Zed\tasks.json)
 //   * project — <workspace>/.zed/tasks.json
 //
 // Labels mirror the F5 toast buttons so the two surfaces map 1:1:
-//   "Fix everything" → pypilot setup     (identical code path)
-//   "Show details"   → pypilot doctor    (same assessment, read-only)
+//   "Fix everything" → pypilot setup   (identical code path)
+//   "Show details"   → pypilot doctor  (same assessment, read-only)
+//
+// Note: we deliberately pass NO `--path`. Zed sets `cwd` to the worktree root and
+// pypilot defaults to the current directory, which avoids the shell splitting a
+// path containing spaces into multiple arguments.
+//
+// Windows gotcha: if `task: spawn` fails with
+//   "IOError: %1 is not a valid Win32 application. (os error 193)"
+// Zed resolved the system shell to the Microsoft Store PowerShell *App Execution
+// Alias* (a 0-byte stub that CreateProcess cannot run). Pin a real shell by adding
+// to each task:
+//   "shell": { "program": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" }
 [
   {
     "label": "pypilot: fix everything (set up environment)",
     "command": "pypilot",
-    "args": ["setup", "--path", "$ZED_WORKTREE_ROOT"],
+    "args": ["setup"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
@@ -24,7 +35,7 @@
   {
     "label": "pypilot: show details (doctor report)",
     "command": "pypilot",
-    "args": ["doctor", "--path", "$ZED_WORKTREE_ROOT"],
+    "args": ["doctor"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
