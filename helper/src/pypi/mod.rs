@@ -1,0 +1,264 @@
+//! F3 — the PyPI metadata engine (the generic "mediapipe problem" solver).
+//!
+//! Given a set of dependency names and the current platform, compute the
+//! intersection of Python versions every dependency can run on. When that
+//! intersection is empty, name the conflicting pair explicitly — that's exactly
+//! where beginners give up ("A needs ≥3.11, B tops out at 3.10").
+//!
+//! No per-library hardcoding: everything is derived from PyPI metadata + wheel
+//! tags. Self-contained — knows nothing of uv, LSP, or the editor.
+
+pub mod cache;
+pub mod client;
+pub mod metadata;
+pub mod pyversion;
+pub mod wheel;
+
+use futures::future::join_all;
+
+pub use client::{FixtureSource, MetadataSource, PyPiClient};
+pub use metadata::PackageAnalysis;
+pub use pyversion::{PyVersion, PyVersionSet};
+
+use crate::core::platform::Platform;
+
+/// A pair of packages whose supported-Python sets don't overlap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictPair {
+    pub low: PackageAnalysis,
+    pub high: PackageAnalysis,
+    /// Human explanation, e.g. "opencv tops out at 3.10; ml-lib needs ≥3.11".
+    pub explanation: String,
+}
+
+/// The full compatibility picture across a project's dependencies.
+#[derive(Debug, Clone)]
+pub struct CompatReport {
+    pub platform: Platform,
+    pub per_package: Vec<PackageAnalysis>,
+    /// Packages that couldn't be fetched (name → error string).
+    pub unresolved: Vec<(String, String)>,
+    /// Intersection of every resolved package's supported set.
+    pub intersection: PyVersionSet,
+    /// Populated only when `intersection` is empty.
+    pub conflicts: Vec<ConflictPair>,
+    /// Packages that will compile from source (sdist-only) on this platform.
+    pub sdist_warnings: Vec<String>,
+}
+
+impl CompatReport {
+    /// The recommended interpreter: the newest Python in the intersection.
+    pub fn suggested_python(&self) -> Option<PyVersion> {
+        self.intersection.max()
+    }
+
+    /// Is a given interpreter compatible with the whole dependency set?
+    pub fn is_compatible(&self, py: PyVersion) -> bool {
+        !self.intersection.is_empty() && self.intersection.contains(py)
+    }
+
+    /// Which packages exclude a given interpreter (for "why 3.13 won't work").
+    pub fn blockers_for(&self, py: PyVersion) -> Vec<&PackageAnalysis> {
+        self.per_package
+            .iter()
+            .filter(|p| !p.supported.contains(py))
+            .collect()
+    }
+}
+
+/// Analyze a project's dependencies against a platform (F3 entry point).
+///
+/// Package lookups fan out concurrently; each is cache-first so the hot path is
+/// off-network. Unresolvable names are collected rather than failing the whole
+/// analysis (a typo'd dep shouldn't blank the report).
+pub async fn analyze<S: MetadataSource>(
+    source: &S,
+    platform: Platform,
+    packages: &[String],
+) -> CompatReport {
+    let results = join_all(
+        packages
+            .iter()
+            .map(|name| async move { (name.clone(), source.fetch(name).await) }),
+    )
+    .await;
+
+    let mut per_package = Vec::new();
+    let mut unresolved = Vec::new();
+    let mut sdist_warnings = Vec::new();
+
+    for (name, res) in results {
+        match res {
+            Ok(meta) => {
+                let analysis = meta.analyze(&platform);
+                if analysis.sdist_only {
+                    sdist_warnings.push(format!(
+                        "{} {} has no prebuilt wheel for your platform — it will compile from source (you may need build tools).",
+                        analysis.name, analysis.version
+                    ));
+                }
+                per_package.push(analysis);
+            }
+            Err(e) => unresolved.push((name, e.to_string())),
+        }
+    }
+
+    let intersection = per_package
+        .iter()
+        .map(|p| p.supported.clone())
+        .reduce(|acc, s| acc.intersect(&s))
+        .unwrap_or_else(PyVersionSet::universe);
+
+    let conflicts = if intersection.is_empty() && per_package.len() >= 2 {
+        find_conflicts(&per_package)
+    } else {
+        Vec::new()
+    };
+
+    CompatReport {
+        platform,
+        per_package,
+        unresolved,
+        intersection,
+        conflicts,
+        sdist_warnings,
+    }
+}
+
+/// Find explicit conflicting pairs when the global intersection is empty.
+///
+/// Strategy: the tightest conflict is between the package with the *lowest max*
+/// supported version and the one with the *highest min* — if those two don't
+/// overlap, that pair is the story to tell the user.
+fn find_conflicts(packages: &[PackageAnalysis]) -> Vec<ConflictPair> {
+    let with_bounds: Vec<&PackageAnalysis> = packages
+        .iter()
+        .filter(|p| !p.supported.is_empty())
+        .collect();
+
+    if with_bounds.len() < 2 {
+        // Some package supports nothing at all on this platform; report each such
+        // package against the best-supported one so the message is still concrete.
+        return degenerate_conflicts(packages);
+    }
+
+    let lowest_max = with_bounds
+        .iter()
+        .min_by_key(|p| p.supported.max().map(|v| v.minor).unwrap_or(u8::MAX))
+        .unwrap();
+    let highest_min = with_bounds
+        .iter()
+        .max_by_key(|p| p.supported.min().map(|v| v.minor).unwrap_or(0))
+        .unwrap();
+
+    if lowest_max.name == highest_min.name {
+        return degenerate_conflicts(packages);
+    }
+
+    let low_cap = lowest_max.supported.max();
+    let high_floor = highest_min.supported.min();
+    let explanation = match (low_cap, high_floor) {
+        (Some(cap), Some(floor)) => format!(
+            "{} supports up to Python {} but {} requires at least Python {} — no single interpreter satisfies both.",
+            lowest_max.name, cap, highest_min.name, floor
+        ),
+        _ => format!(
+            "{} and {} have no overlapping supported Python version.",
+            lowest_max.name, highest_min.name
+        ),
+    };
+
+    vec![ConflictPair {
+        low: (*lowest_max).clone(),
+        high: (*highest_min).clone(),
+        explanation,
+    }]
+}
+
+/// Fallback when a package supports no Python at all on this platform.
+fn degenerate_conflicts(packages: &[PackageAnalysis]) -> Vec<ConflictPair> {
+    let mut out = Vec::new();
+    let anchor = packages.iter().max_by_key(|p| p.supported.len()).cloned();
+    for p in packages.iter().filter(|p| p.supported.is_empty()) {
+        let explanation = format!(
+            "{} {} has no installable distribution for your platform/Python — it constrains the project to nothing.",
+            p.name, p.version
+        );
+        if let Some(anchor) = &anchor {
+            out.push(ConflictPair {
+                low: p.clone(),
+                high: anchor.clone(),
+                explanation,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::platform::{Arch, Os};
+    use crate::pypi::metadata::{DistFile, Info, PackageMetadata};
+
+    fn linux() -> Platform {
+        Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        }
+    }
+
+    fn wheel(name: &str) -> DistFile {
+        DistFile {
+            filename: name.to_string(),
+            packagetype: "bdist_wheel".into(),
+            requires_python: None,
+            yanked: false,
+        }
+    }
+
+    fn pkg(name: &str, rp: Option<&str>, files: Vec<DistFile>) -> PackageMetadata {
+        PackageMetadata {
+            info: Info {
+                name: name.into(),
+                version: "1.0".into(),
+                requires_python: rp.map(|s| s.to_string()),
+            },
+            urls: files,
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_intersection_names_conflicting_pair() {
+        let mut src = FixtureSource::new();
+        // legacy: wheels only cp38-cp310
+        src.insert(
+            "legacy",
+            pkg(
+                "legacy",
+                Some(">=3.8"),
+                vec![
+                    wheel("legacy-1.0-cp38-cp38-manylinux_2_17_x86_64.whl"),
+                    wheel("legacy-1.0-cp310-cp310-manylinux_2_17_x86_64.whl"),
+                ],
+            ),
+        );
+        // shiny: requires >=3.11
+        src.insert(
+            "shiny",
+            pkg(
+                "shiny",
+                Some(">=3.11"),
+                vec![wheel("shiny-1.0-cp311-cp311-manylinux_2_17_x86_64.whl")],
+            ),
+        );
+
+        let report = analyze(&src, linux(), &["legacy".to_string(), "shiny".to_string()]).await;
+
+        assert!(report.intersection.is_empty());
+        assert_eq!(report.conflicts.len(), 1);
+        let c = &report.conflicts[0];
+        assert!(c.explanation.contains("legacy"));
+        assert!(c.explanation.contains("shiny"));
+    }
+}
