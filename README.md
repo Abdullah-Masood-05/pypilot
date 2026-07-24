@@ -1,84 +1,132 @@
 # PyPilot for Zed
 
-A Zed editor extension that sets up Python environments and resolves
-version/hardware compatibility — deterministically, with **zero AI/LLM calls**.
-Every decision is a metadata lookup, a static table, or a shell command.
+You clone a Python repo, run the install, and it fails on a package that has no
+wheel for the interpreter you happen to have. PyPilot works out which Python
+version the project's dependencies can actually run on, builds the venv on that
+version, and tells you which package set the limit.
 
-> **Status:** Phase 0 + Phase 1 (skeleton, `doctor`/`setup`, the PyPI metadata
-> engine, and the onboarding toast). The live import guardian (F4) and the
-> CUDA/hardware matrix (F2) are scaffolded but not yet implemented.
+Every answer comes from package metadata and static tables. There are no API
+keys and no model calls.
 
-## Architecture
+## The problem it solves
 
-Two components, one repo:
+A package's `requires_python` field is often a lie of omission. mediapipe 0.10.9
+declares `>=3.8`, but the only wheels it ships are cp39 through cp312. Install it
+on Python 3.13 and pip goes looking for a source distribution that isn't there,
+then fails with something about metadata. Nothing in that error mentions Python
+versions.
 
-- **`extension/`** — a thin Zed WASM shim (`zed_extension_api`). It detects the
-  platform, downloads the matching prebuilt helper on first run, and registers it
-  as a Python language server. Almost no logic, so Zed API churn barely touches it.
-- **`helper/`** — the native `pypilot` binary. One binary, three modes, one shared
-  brain:
-  - `pypilot doctor` — read-only probe + compatibility report.
-  - `pypilot setup` — full environment bootstrap (uv by default, pip if configured).
-  - `pypilot lsp` — the stdio LSP server Zed launches (F5 onboarding toast).
+PyPilot reads both signals. It takes `requires_python` as a starting range, then
+intersects it with the interpreter versions that actually have a wheel built for
+your OS and CPU. Do that for every dependency in the project and the overlap is
+the set of interpreters the whole thing can run on. If the overlap is empty, two
+packages disagree, and PyPilot says which two and what each one needs.
 
-The helper is **editor-agnostic** by design: it works standalone in any terminal
-or CI. Only the shim knows about Zed.
+Naming the two packages matters more than applying the fix, because a conflict
+between dependencies is the case where the error message tells you least.
 
-### How the compatibility engine works (the "mediapipe problem")
+## Status
 
-The set of CPython versions a project can run on is a small, bounded universe
-(`3.7…3.14`). Each dependency's `requires_python` (PEP 440) and its wheel `cpXY`
-tags — filtered to your OS/arch — *narrow* that set. The project's answer is the
-**intersection** across every dependency. If it's empty, PyPilot names the
-conflicting pair. mediapipe ships `cp39`–`cp312` wheels only, so on Python 3.13 it
-can't install even though `requires_python` says `>=3.8` — PyPilot catches that and
-suggests 3.12, stating *why*.
+Phase 0 and Phase 1 are done: the helper binary, the PyPI compatibility engine,
+the environment bootstrap, and the onboarding notification.
+
+Two features are scaffolded but not implemented. The hardware matrix in
+`matrix/` returns an empty report, so nothing checks GPU drivers or CUDA builds
+yet. There are no per-buffer diagnostics on `import` statements either. Both
+have their module boundaries and call sites in place, so neither needs a
+refactor to land.
+
+## How it fits together
+
+The Zed extension in `extension/` is a WASM shim of under 200 lines. It detects
+your platform, downloads the matching helper binary, and registers it as a
+language server. It holds no logic of its own, which keeps Zed API changes from
+reaching anything important.
+
+Everything else lives in `helper/`, a native binary with three modes over one
+shared library:
+
+```
+pypilot doctor    read-only report, changes nothing
+pypilot setup     build the environment
+pypilot lsp       stdio LSP server, the mode Zed launches
+```
+
+The helper knows nothing about Zed and works in any terminal or CI job. The
+toast button labelled "Fix everything" and the `pypilot setup` command call the
+same function, so the two surfaces cannot drift apart.
+
+Running `doctor` or `setup` from a Zed task also writes a small request file
+into the cache directory. If an LSP instance is watching that workspace it
+picks the request up within a second and shows the result as a notification, so
+a task run gets the same actionable buttons as the startup scan.
 
 ## Layout
 
 ```
 pypilot/
-├─ extension/            # Zed WASM shim (extension.toml + src/lib.rs)
-├─ helper/               # native binary
+├─ extension/            Zed WASM shim (extension.toml + src/lib.rs)
+├─ helper/               native binary
 │  ├─ src/
-│  │  ├─ main.rs         # mode dispatch: lsp | setup | doctor | check | fix
-│  │  ├─ cli/            # doctor + setup frontends
-│  │  ├─ lsp/            # tower-lsp server (F5 toast, executeCommand)
-│  │  ├─ core/           # probes, project parsing, solver, uv/pip drivers
-│  │  ├─ pypi/           # F3: metadata client, wheel-tag parser, cache
-│  │  └─ matrix/         # F2 seam: bundled-data loader (stub)
-│  ├─ data/              # nvidia.json, frameworks.json, import_map.json
-│  └─ tests/             # fixtures + integration tests (offline)
-├─ tasks/                # Zed task templates (F6)
-└─ .github/workflows/    # cross-platform CI + release
+│  │  ├─ main.rs         mode dispatch
+│  │  ├─ cli/            doctor and setup front ends
+│  │  ├─ lsp/            tower-lsp server, notifications, commands
+│  │  ├─ core/           probes, project parsing, solver, uv and pip drivers
+│  │  ├─ pypi/           metadata client, wheel tag parser, disk cache
+│  │  └─ matrix/         hardware seam (stub)
+│  ├─ data/              nvidia.json, frameworks.json, import_map.json
+│  └─ tests/             fixtures and offline integration tests
+├─ tasks/                Zed task templates
+└─ .github/workflows/    cross platform CI and release builds
 ```
 
-## Settings (F7)
+## Settings
 
-Global config in the platform config dir, overridable per-project via
-`<workspace>/.zed/pypilot.toml` or `<workspace>/pypilot.toml`:
+Global config lives in the platform config directory. A project can override any
+key from `.zed/pypilot.toml` or `pypilot.toml` in its root.
 
 ```toml
-package_manager   = "uv"            # "uv" (default) | "pip" — pip never touches uv
-notifications     = "problems-only" # "all" | "problems-only" | "off"
+package_manager    = "uv"             # "uv" or "pip". pip mode never touches uv.
+notifications      = "problems-only"  # "all", "problems-only", or "off"
 auto_check_on_open = true
-data_refresh_days  = 7              # 0 = fully offline
+data_refresh_days  = 7                # 0 stays fully offline
 ```
 
-## Build & test
+In pip mode the compatibility checks are identical, because none of that logic
+knows which installer you use. What changes is that pip cannot fetch a missing
+interpreter, so if the project needs Python 3.12 and you don't have it, PyPilot
+says so instead of installing it for you.
+
+## Commands
+
+Zed gives extensions no way to add command palette entries, so the commands ship
+as tasks. Copy `tasks/pypilot.json` into `.zed/tasks.json` for one project, or
+into your global Zed `tasks.json`, then run them from `task: spawn`.
+
+On Windows, Zed cannot spawn Microsoft Store app execution aliases, which is
+most PowerShell 7 installs. If a task fails with "os error 193", point the task
+at a real executable such as `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`.
+The template has the details.
+
+## Build and test
 
 ```bash
-# Native helper (the part with all the logic):
 cargo test  -p pypilot-helper
 cargo build -p pypilot-helper --release
 
-# WASM shim:
 rustup target add wasm32-unknown-unknown
 cargo build -p pypilot-zed --target wasm32-unknown-unknown --release
 ```
 
-Tests are fully offline — PyPI is mocked with recorded JSON fixtures.
+The tests never touch the network. PyPI responses are recorded JSON fixtures,
+and the platform is pinned to Linux x86-64 inside the wheel tag tests so results
+don't change with the machine running them.
+
+To try the extension against a local build, put `pypilot` on your PATH with
+`cargo install --path helper`, then use `zed: install dev extension` and pick the
+`extension` directory. The shim prefers a `pypilot` already on PATH over
+downloading a release.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
