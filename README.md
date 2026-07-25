@@ -129,4 +129,16 @@ downloading a release.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Two licenses, because the two halves are distributed differently.
+
+`helper/`, which is the whole engine, is **AGPL-3.0-or-later**. See
+[helper/LICENSE](helper/LICENSE).
+
+`extension/`, the WASM shim Zed compiles and distributes, is **Apache-2.0**. See
+[LICENSE](LICENSE). Zed's extension registry only accepts a fixed list of
+licenses for the code that becomes the extension binary, and AGPL is not on it.
+Their rules exempt tools the extension merely downloads and runs, naming
+language servers specifically, which is exactly what the helper is.
+
+In practice: use PyPilot however you like. Ship a modified helper and you owe
+users its source.
