@@ -6,6 +6,10 @@
 //! the LSP layer and reuses the same [`Assessment`].
 
 pub mod command;
+pub mod guardian;
+pub mod imports;
+pub mod install;
+pub mod installed;
 pub mod interpreter;
 pub mod pip;
 pub mod platform;
@@ -14,6 +18,7 @@ pub mod project;
 pub mod rescan;
 pub mod setup;
 pub mod solver;
+pub mod stdlib;
 pub mod uv;
 
 use crate::pypi::{CompatReport, PyVersion};
