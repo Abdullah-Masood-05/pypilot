@@ -7,13 +7,47 @@
 
 use std::path::{Path, PathBuf};
 
+/// A dependency as the project declares it: a name plus whatever version
+/// constraint came with it.
+///
+/// The constraint matters. `mediapipe` resolves to the newest release, while
+/// `mediapipe==0.10.14` resolves to one that supports a narrower set of Python
+/// versions, so dropping the specifier produces a confidently wrong answer.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct Requirement {
+    /// Normalized per PEP 503.
+    pub name: String,
+    /// The specifier as written, e.g. `==0.10.14`. Empty when unconstrained.
+    pub spec: String,
+}
+
+impl Requirement {
+    /// A dependency with no version constraint.
+    pub fn any(name: impl Into<String>) -> Requirement {
+        Requirement {
+            name: name.into(),
+            spec: String::new(),
+        }
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        !self.spec.is_empty()
+    }
+}
+
+impl std::fmt::Display for Requirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.name, self.spec)
+    }
+}
+
 /// What we learned from a workspace's project files.
 #[derive(Debug, Clone, Default)]
 pub struct ProjectDeps {
     /// Signal files that were found and parsed.
     pub sources: Vec<PathBuf>,
-    /// Normalized dependency names (deduped, lowercased).
-    pub packages: Vec<String>,
+    /// Declared dependencies, deduped and normalized.
+    pub packages: Vec<Requirement>,
     /// `requires-python` from pyproject, if declared.
     pub declared_requires_python: Option<String>,
     /// True when an `environment.yml` is present.
@@ -25,6 +59,11 @@ pub struct ProjectDeps {
 impl ProjectDeps {
     pub fn is_python_project(&self) -> bool {
         !self.sources.is_empty()
+    }
+
+    /// Just the names, for display and for callers that don't care about pins.
+    pub fn names(&self) -> Vec<String> {
+        self.packages.iter().map(|r| r.name.clone()).collect()
     }
 }
 
@@ -90,6 +129,41 @@ pub fn normalize_name(name: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
+/// Parse one dependency line into a name and its version specifier.
+///
+/// Environment markers and extras are dropped: neither changes which release an
+/// installer picks for the current machine. The version specifier is kept,
+/// because it does.
+pub fn parse_requirement(line: &str) -> Option<Requirement> {
+    let name = requirement_name(line)?;
+
+    let line = line.trim();
+    // Cut the marker first so `; python_version<'3.10'` is not read as a bound.
+    let without_marker = line.split(';').next().unwrap_or(line);
+    // Then drop extras, whose brackets can contain commas.
+    let without_extras = match (without_marker.find('['), without_marker.find(']')) {
+        (Some(open), Some(close)) if close > open => {
+            format!(
+                "{}{}",
+                &without_marker[..open],
+                &without_marker[close + 1..]
+            )
+        }
+        _ => without_marker.to_string(),
+    };
+
+    // The specifier begins at the first comparison character.
+    let spec = match without_extras.find(['=', '<', '>', '!', '~']) {
+        Some(i) => without_extras[i..]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect(),
+        None => String::new(),
+    };
+
+    Some(Requirement { name, spec })
+}
+
 /// Extract the bare package name from a single requirement specifier line.
 /// Returns `None` for comments, options, includes, blank lines, and URLs.
 pub fn requirement_name(line: &str) -> Option<String> {
@@ -136,12 +210,12 @@ fn strip_extras(name: &str) -> &str {
     }
 }
 
-fn parse_requirements(text: &str) -> Vec<String> {
-    text.lines().filter_map(requirement_name).collect()
+fn parse_requirements(text: &str) -> Vec<Requirement> {
+    text.lines().filter_map(parse_requirement).collect()
 }
 
 /// Parse dependencies + requires-python from pyproject.toml (PEP 621 and Poetry).
-fn parse_pyproject(text: &str) -> (Vec<String>, Option<String>) {
+fn parse_pyproject(text: &str) -> (Vec<Requirement>, Option<String>) {
     let mut names = Vec::new();
     let mut requires_python = None;
 
@@ -156,8 +230,8 @@ fn parse_pyproject(text: &str) -> (Vec<String>, Option<String>) {
         }
         if let Some(deps) = project.get("dependencies").and_then(|v| v.as_array()) {
             for d in deps.iter().filter_map(|v| v.as_str()) {
-                if let Some(n) = requirement_name(d) {
-                    names.push(n);
+                if let Some(r) = parse_requirement(d) {
+                    names.push(r);
                 }
             }
         }
@@ -168,8 +242,8 @@ fn parse_pyproject(text: &str) -> (Vec<String>, Option<String>) {
         {
             for group in opt.values().filter_map(|v| v.as_array()) {
                 for d in group.iter().filter_map(|v| v.as_str()) {
-                    if let Some(n) = requirement_name(d) {
-                        names.push(n);
+                    if let Some(r) = parse_requirement(d) {
+                        names.push(r);
                     }
                 }
             }
@@ -193,7 +267,16 @@ fn parse_pyproject(text: &str) -> (Vec<String>, Option<String>) {
                 }
                 continue;
             }
-            names.push(normalize_name(key));
+            let spec = poetry
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(caret_to_pep440)
+                .filter(|s| !s.is_empty() && s != "*")
+                .unwrap_or_default();
+            names.push(Requirement {
+                name: normalize_name(key),
+                spec,
+            });
         }
     }
 
@@ -201,7 +284,7 @@ fn parse_pyproject(text: &str) -> (Vec<String>, Option<String>) {
 }
 
 /// Best-effort conda environment.yml: dependency names + the `python=` pin.
-fn parse_environment_yml(text: &str) -> (Vec<String>, Option<String>) {
+fn parse_environment_yml(text: &str) -> (Vec<Requirement>, Option<String>) {
     let mut names = Vec::new();
     let mut python = None;
     let mut in_deps = false;
@@ -237,7 +320,7 @@ fn parse_environment_yml(text: &str) -> (Vec<String>, Option<String>) {
                         .map(|v| v.trim().trim_matches('=').to_string())
                         .filter(|s| !s.is_empty());
                 } else if !name_part.is_empty() {
-                    names.push(normalize_name(name_part));
+                    names.push(Requirement::any(normalize_name(name_part)));
                 }
             }
         }
@@ -270,11 +353,21 @@ fn has_python_file(dir: &Path) -> bool {
         .any(|e| e.path().extension().is_some_and(|x| x == "py"))
 }
 
-fn dedupe(mut names: Vec<String>) -> Vec<String> {
-    names.retain(|n| !n.is_empty());
-    names.sort();
-    names.dedup();
-    names
+fn dedupe(mut reqs: Vec<Requirement>) -> Vec<Requirement> {
+    reqs.retain(|r| !r.name.is_empty());
+    reqs.sort();
+    // Same name declared twice: keep the constrained one, since an installer
+    // has to satisfy every mention.
+    reqs.dedup_by(|a, b| {
+        if a.name != b.name {
+            return false;
+        }
+        if b.spec.is_empty() && !a.spec.is_empty() {
+            b.spec = a.spec.clone();
+        }
+        true
+    });
+    reqs
 }
 
 #[cfg(test)]
@@ -318,8 +411,8 @@ dependencies = ["mediapipe==0.10.9", "numpy>=1.24"]
 "#;
         let (names, rp) = parse_pyproject(text);
         assert_eq!(rp.as_deref(), Some(">=3.9,<3.13"));
-        assert!(names.contains(&"mediapipe".to_string()));
-        assert!(names.contains(&"numpy".to_string()));
+        assert!(names.iter().any(|r| r.name == "mediapipe"));
+        assert!(names.iter().any(|r| r.name == "numpy"));
     }
 
     #[test]
@@ -330,8 +423,8 @@ python = "^3.10"
 requests = "^2.31"
 "#;
         let (names, rp) = parse_pyproject(text);
-        assert!(names.contains(&"requests".to_string()));
-        assert!(!names.contains(&"python".to_string()));
+        assert!(names.iter().any(|r| r.name == "requests"));
+        assert!(!names.iter().any(|r| r.name == "python"));
         assert!(rp.unwrap().starts_with(">=3.10"));
     }
 
@@ -340,7 +433,7 @@ requests = "^2.31"
         let text = "name: demo\ndependencies:\n  - python=3.10\n  - numpy>=1.20\n";
         let (names, py) = parse_environment_yml(text);
         assert_eq!(py.as_deref(), Some("3.10"));
-        assert!(names.contains(&"numpy".to_string()));
-        assert!(!names.contains(&"python".to_string()));
+        assert!(names.iter().any(|r| r.name == "numpy"));
+        assert!(!names.iter().any(|r| r.name == "python"));
     }
 }
