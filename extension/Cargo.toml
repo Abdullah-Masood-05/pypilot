@@ -3,7 +3,9 @@ name = "pypilot-zed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# Must be one of the licenses Zed's extension registry accepts, since this crate
+# is what compiles into the binary they distribute. AGPL is not on that list.
+license = "Apache-2.0"
 repository.workspace = true
 authors.workspace = true
 description = "Zed shim for PyPilot. Downloads the helper binary for your platform and registers it as a Python language server."

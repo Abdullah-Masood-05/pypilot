@@ -3,7 +3,10 @@ name = "pypilot-helper"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# The engine is copyleft. It is a language server the extension downloads and
+# runs as a separate process, which Zed's registry rules exempt from their
+# accepted-license list.
+license = "AGPL-3.0-or-later"
 repository.workspace = true
 authors.workspace = true
 description = "Works out which Python version a project's dependencies can run on, then builds the venv. Runs as a CLI or an LSP server."
