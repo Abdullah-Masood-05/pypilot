@@ -72,7 +72,14 @@ pub async fn run<S: MetadataSource>(
         if let Some(rp) = &a.project.declared_requires_python {
             println!("  requires-python : {rp}");
         }
-        println!("  dependencies    : {}", a.project.packages.join(", "));
+        let deps = a
+            .project
+            .packages
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  dependencies    : {deps}");
     }
     println!();
 

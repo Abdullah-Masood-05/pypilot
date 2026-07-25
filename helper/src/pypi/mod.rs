@@ -12,6 +12,7 @@ pub mod cache;
 pub mod client;
 pub mod metadata;
 pub mod pyversion;
+pub mod version;
 pub mod wheel;
 
 use futures::future::join_all;
@@ -21,6 +22,8 @@ pub use metadata::PackageAnalysis;
 pub use pyversion::{PyVersion, PyVersionSet};
 
 use crate::core::platform::Platform;
+use crate::core::project::Requirement;
+use crate::pypi::version::VersionSpec;
 
 /// A pair of packages whose supported-Python sets don't overlap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +69,45 @@ impl CompatReport {
     }
 }
 
+/// Fetch the metadata for the release an installer would actually choose.
+///
+/// An unconstrained dependency gets the newest release, which is what the plain
+/// lookup already returns. A pinned or capped one gets the newest release that
+/// satisfies its specifier, because that is the release whose wheels decide
+/// which Python versions are usable. Reading the newest release for a pinned
+/// dependency is how you end up recommending an interpreter the pinned version
+/// cannot install on.
+async fn resolve<S: MetadataSource>(
+    source: &S,
+    req: &Requirement,
+) -> crate::Result<metadata::PackageMetadata> {
+    let latest = source.fetch(&req.name).await?;
+
+    if !req.is_pinned() {
+        return Ok(latest);
+    }
+
+    let spec = VersionSpec::parse(&req.spec);
+    if spec.is_unconstrained() {
+        return Ok(latest);
+    }
+
+    let Some(chosen) = spec.select_newest(latest.versions.iter().map(|s| s.as_str())) else {
+        anyhow::bail!(
+            "no release of `{}` satisfies `{}`",
+            req.name,
+            req.spec.trim()
+        );
+    };
+
+    // Already holding it: the newest release satisfies the specifier.
+    if chosen.raw == latest.info.version {
+        return Ok(latest);
+    }
+
+    source.fetch_version(&req.name, &chosen.raw).await
+}
+
 /// Analyze a project's dependencies against a platform (F3 entry point).
 ///
 /// Package lookups fan out concurrently; each is cache-first so the hot path is
@@ -74,12 +116,12 @@ impl CompatReport {
 pub async fn analyze<S: MetadataSource>(
     source: &S,
     platform: Platform,
-    packages: &[String],
+    packages: &[Requirement],
 ) -> CompatReport {
     let results = join_all(
         packages
             .iter()
-            .map(|name| async move { (name.clone(), source.fetch(name).await) }),
+            .map(|req| async move { (req.to_string(), resolve(source, req).await) }),
     )
     .await;
 
@@ -225,6 +267,7 @@ mod tests {
                 requires_python: rp.map(|s| s.to_string()),
             },
             urls: files,
+            versions: vec!["1.0".into()],
         }
     }
 
@@ -253,7 +296,12 @@ mod tests {
             ),
         );
 
-        let report = analyze(&src, linux(), &["legacy".to_string(), "shiny".to_string()]).await;
+        let report = analyze(
+            &src,
+            linux(),
+            &[Requirement::any("legacy"), Requirement::any("shiny")],
+        )
+        .await;
 
         assert!(report.intersection.is_empty());
         assert_eq!(report.conflicts.len(), 1);

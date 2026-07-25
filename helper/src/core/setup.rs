@@ -256,7 +256,7 @@ async fn run_pip(
             Err(e) => fail(summary, "pip install -r requirements.txt", &e.to_string()),
         }
     } else if !assessment.project.packages.is_empty() {
-        match pip::install_packages(venv_path, &assessment.project.packages, workspace).await {
+        match pip::install_packages(venv_path, &assessment.project.names(), workspace).await {
             Ok(out) if out.success() => step_ok(summary, "pip install", "installed"),
             Ok(out) => fail(summary, "pip install", out.stderr.trim()),
             Err(e) => fail(summary, "pip install", &e.to_string()),

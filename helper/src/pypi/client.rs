@@ -20,7 +20,13 @@ use crate::pypi::metadata::PackageMetadata;
 /// missing `Send` bound the lint warns about doesn't apply here.
 #[allow(async_fn_in_trait)]
 pub trait MetadataSource {
+    /// Metadata for the newest release, plus the list of every published version.
     async fn fetch(&self, name: &str) -> crate::Result<PackageMetadata>;
+
+    /// Metadata for one specific release. Needed when a dependency is pinned or
+    /// capped, because the files that decide Python support belong to that
+    /// release rather than the newest one.
+    async fn fetch_version(&self, name: &str, version: &str) -> crate::Result<PackageMetadata>;
 }
 
 /// Live PyPI client: disk cache first, then `pypi.org/pypi/<name>/json`.
@@ -81,7 +87,37 @@ impl MetadataSource for PyPiClient {
             .with_context(|| format!("parsing PyPI JSON for `{name}`"))?;
 
         // 3. Persist into both cache tiers.
-        self.cache.put(name, &meta);
+        self.cache.put_latest(name, &meta);
+        Ok(meta)
+    }
+
+    async fn fetch_version(&self, name: &str, version: &str) -> crate::Result<PackageMetadata> {
+        // A released version's file list never changes, so this tier is cached
+        // forever and a hit means no request at all.
+        if let Some(meta) = self.cache.get_release(name, version) {
+            return Ok(meta);
+        }
+
+        let url = format!("{}/{}/{}/json", self.base_url, name, version);
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("requesting metadata for `{name}=={version}`"))?;
+
+        if !resp.status().is_success() {
+            anyhow::bail!("PyPI returned {} for `{name}=={version}`", resp.status());
+        }
+
+        let meta: PackageMetadata = resp
+            .json()
+            .await
+            .with_context(|| format!("parsing PyPI JSON for `{name}=={version}`"))?;
+
+        // Release tier only: this is an older document and must not become the
+        // package's "latest" answer.
+        self.cache.put_release(name, &meta);
         Ok(meta)
     }
 }
@@ -119,5 +155,14 @@ impl MetadataSource for FixtureSource {
             .get(&name.to_lowercase())
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("no fixture registered for `{name}`"))
+    }
+
+    async fn fetch_version(&self, name: &str, version: &str) -> crate::Result<PackageMetadata> {
+        // Registered as "name==version", mirroring how a pin is written.
+        let key = format!("{}=={version}", name.to_lowercase());
+        self.by_name
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no fixture registered for `{key}`"))
     }
 }

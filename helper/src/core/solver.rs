@@ -10,6 +10,8 @@ use std::path::Path;
 use crate::core::platform::Platform;
 use crate::core::probe::Probes;
 use crate::core::project::ProjectDeps;
+#[cfg(test)]
+use crate::core::project::Requirement;
 use crate::core::{Assessment, Finding, FixKind, Severity};
 use crate::matrix;
 use crate::pypi::pyversion::PyVersion;
@@ -52,7 +54,7 @@ pub async fn assess<S: MetadataSource>(
     };
 
     // F2 seam (empty in Phase 1).
-    let hardware = matrix::check(workspace, settings, &project.packages).await;
+    let hardware = matrix::check(workspace, settings, &project.names()).await;
 
     let env = EnvSummary::from_probes(&probes);
     let (target_python, mut findings) = synthesize(&env, &project, compat.as_ref());
@@ -263,7 +265,7 @@ mod tests {
     fn python_project() -> ProjectDeps {
         ProjectDeps {
             sources: vec!["requirements.txt".into()],
-            packages: vec!["mediapipe".into()],
+            packages: vec![Requirement::any("mediapipe")],
             ..Default::default()
         }
     }

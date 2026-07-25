@@ -18,6 +18,63 @@ pub struct PackageMetadata {
     /// Distribution files for `info.version` (the latest release).
     #[serde(default)]
     pub urls: Vec<DistFile>,
+    /// Every published version, needed to resolve a pinned or capped
+    /// dependency to the release an installer would actually choose.
+    ///
+    /// PyPI sends this as a `releases` object whose values are per-version file
+    /// lists. Those lists are large and we only want the keys, so they are
+    /// discarded while parsing. Serializing writes a plain array, which is why
+    /// the deserializer accepts both shapes: the array is what comes back out
+    /// of our own cache.
+    #[serde(
+        rename = "releases",
+        default,
+        deserialize_with = "deserialize_version_list"
+    )]
+    pub versions: Vec<String>,
+}
+
+/// Accept either PyPI's `{version: [files]}` object or our cached `[version]`
+/// array, keeping only the version strings.
+fn deserialize_version_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct VersionList;
+
+    impl<'de> serde::de::Visitor<'de> for VersionList {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a releases object or an array of version strings")
+        }
+
+        fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            let mut out = Vec::new();
+            while let Some(key) = map.next_key::<String>()? {
+                // Skip the file list without allocating it.
+                map.next_value::<serde::de::IgnoredAny>()?;
+                out.push(key);
+            }
+            Ok(out)
+        }
+
+        fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
+        where
+            S: serde::de::SeqAccess<'de>,
+        {
+            let mut out = Vec::new();
+            while let Some(v) = seq.next_element::<String>()? {
+                out.push(v);
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(VersionList)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +225,7 @@ mod tests {
                 wheel("mediapipe-0.10.9-cp39-cp39-manylinux_2_17_x86_64.whl"),
                 wheel("mediapipe-0.10.9-cp312-cp312-manylinux_2_17_x86_64.whl"),
             ],
+            versions: vec!["0.10.9".into()],
         };
         let a = meta.analyze(&linux());
         assert!(a.has_platform_wheels);
@@ -190,6 +248,7 @@ mod tests {
                 requires_python: None,
                 yanked: false,
             }],
+            versions: vec!["1.0".into()],
         };
         let a = meta.analyze(&linux());
         assert!(a.sdist_only);
