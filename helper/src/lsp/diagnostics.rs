@@ -29,7 +29,9 @@ pub struct FixData {
 pub enum FixAction {
     /// Install into the environment that already exists.
     Install,
-    /// Rebuild the environment on `python`, then install.
+    /// Build the project's first environment on `python`, then install.
+    Create { python: String },
+    /// Replace the existing environment with one on `python`, then install.
     Recreate {
         python: String,
         reinstall_count: usize,
@@ -80,9 +82,8 @@ pub fn to_diagnostic(finding: &Finding) -> Diagnostic {
                 finding.package
             );
             let action = match target {
-                Some(t) => FixAction::Recreate {
+                Some(t) => FixAction::Create {
                     python: t.to_string(),
-                    reinstall_count: 0,
                 },
                 None => FixAction::None,
             };
@@ -150,6 +151,21 @@ pub fn code_actions(diagnostics: &[Diagnostic]) -> Vec<CodeActionOrCommand> {
                     title: format!("Install {}", fix.package),
                     command: CMD_INSTALL.to_string(),
                     arguments: Some(vec![serde_json::Value::String(fix.package.clone())]),
+                },
+            ),
+
+            FixAction::Create { python } => (
+                format!(
+                    "Create environment on Python {python} and install `{}`",
+                    fix.package
+                ),
+                Command {
+                    title: "Create environment".to_string(),
+                    command: CMD_RECREATE.to_string(),
+                    arguments: Some(vec![
+                        serde_json::Value::String(python.clone()),
+                        serde_json::Value::String(fix.package.clone()),
+                    ]),
                 },
             ),
 
@@ -272,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_project_omits_the_reinstall_clause() {
+    fn fresh_project_creates_rather_than_rebuilds() {
         let d = to_diagnostic(&finding(
             Problem::NoEnvironment {
                 target: Some(PyVersion::py3(12)),
@@ -283,6 +299,12 @@ mod tests {
         let CodeActionOrCommand::CodeAction(action) = &code_actions(&[d])[0] else {
             panic!("expected a code action");
         };
+        // There is nothing to rebuild or reinstall when no venv exists.
+        assert!(
+            action.title.starts_with("Create environment"),
+            "{}",
+            action.title
+        );
         assert!(!action.title.contains("reinstalled"));
     }
 
