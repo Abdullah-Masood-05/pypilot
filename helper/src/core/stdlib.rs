@@ -1,0 +1,268 @@
+//! CPython standard library module names.
+//!
+//! F4 skips these before doing anything else: they are never PyPI packages, and
+//! looking them up would put a network round trip in front of `import os`.
+//!
+//! The list is the union across supported CPython versions, so a module removed
+//! in a later release (`distutils`, `imp`) still counts as stdlib and stays
+//! quiet. Missing an entry here means a spurious "not installed" diagnostic, so
+//! the union is the safe direction to err in.
+
+/// Sorted for binary search. Includes private/underscore modules users import.
+static STDLIB: &[&str] = &[
+    "__future__",
+    "_thread",
+    "abc",
+    "aifc",
+    "argparse",
+    "array",
+    "ast",
+    "asynchat",
+    "asyncio",
+    "asyncore",
+    "atexit",
+    "audioop",
+    "base64",
+    "bdb",
+    "binascii",
+    "bisect",
+    "builtins",
+    "bz2",
+    "cProfile",
+    "calendar",
+    "cgi",
+    "cgitb",
+    "chunk",
+    "cmath",
+    "cmd",
+    "code",
+    "codecs",
+    "codeop",
+    "collections",
+    "colorsys",
+    "compileall",
+    "concurrent",
+    "configparser",
+    "contextlib",
+    "contextvars",
+    "copy",
+    "copyreg",
+    "crypt",
+    "csv",
+    "ctypes",
+    "curses",
+    "dataclasses",
+    "datetime",
+    "dbm",
+    "decimal",
+    "difflib",
+    "dis",
+    "distutils",
+    "doctest",
+    "email",
+    "encodings",
+    "ensurepip",
+    "enum",
+    "errno",
+    "faulthandler",
+    "fcntl",
+    "filecmp",
+    "fileinput",
+    "fnmatch",
+    "fractions",
+    "ftplib",
+    "functools",
+    "gc",
+    "getopt",
+    "getpass",
+    "gettext",
+    "glob",
+    "graphlib",
+    "grp",
+    "gzip",
+    "hashlib",
+    "heapq",
+    "hmac",
+    "html",
+    "http",
+    "idlelib",
+    "imaplib",
+    "imghdr",
+    "imp",
+    "importlib",
+    "inspect",
+    "io",
+    "ipaddress",
+    "itertools",
+    "json",
+    "keyword",
+    "lib2to3",
+    "linecache",
+    "locale",
+    "logging",
+    "lzma",
+    "mailbox",
+    "mailcap",
+    "marshal",
+    "math",
+    "mimetypes",
+    "mmap",
+    "modulefinder",
+    "msilib",
+    "msvcrt",
+    "multiprocessing",
+    "netrc",
+    "nis",
+    "nntplib",
+    "ntpath",
+    "numbers",
+    "operator",
+    "optparse",
+    "os",
+    "ossaudiodev",
+    "pathlib",
+    "pdb",
+    "pickle",
+    "pickletools",
+    "pipes",
+    "pkgutil",
+    "platform",
+    "plistlib",
+    "poplib",
+    "posix",
+    "posixpath",
+    "pprint",
+    "profile",
+    "pstats",
+    "pty",
+    "pwd",
+    "py_compile",
+    "pyclbr",
+    "pydoc",
+    "queue",
+    "quopri",
+    "random",
+    "re",
+    "readline",
+    "reprlib",
+    "resource",
+    "rlcompleter",
+    "runpy",
+    "sched",
+    "secrets",
+    "select",
+    "selectors",
+    "shelve",
+    "shlex",
+    "shutil",
+    "signal",
+    "site",
+    "smtpd",
+    "smtplib",
+    "sndhdr",
+    "socket",
+    "socketserver",
+    "spwd",
+    "sqlite3",
+    "ssl",
+    "stat",
+    "statistics",
+    "string",
+    "stringprep",
+    "struct",
+    "subprocess",
+    "sunau",
+    "symtable",
+    "sys",
+    "sysconfig",
+    "syslog",
+    "tabnanny",
+    "tarfile",
+    "telnetlib",
+    "tempfile",
+    "termios",
+    "test",
+    "textwrap",
+    "threading",
+    "time",
+    "timeit",
+    "tkinter",
+    "token",
+    "tokenize",
+    "tomllib",
+    "trace",
+    "traceback",
+    "tracemalloc",
+    "tty",
+    "turtle",
+    "turtledemo",
+    "types",
+    "typing",
+    "unicodedata",
+    "unittest",
+    "urllib",
+    "uu",
+    "uuid",
+    "venv",
+    "warnings",
+    "wave",
+    "weakref",
+    "webbrowser",
+    "winreg",
+    "winsound",
+    "wsgiref",
+    "xdrlib",
+    "xml",
+    "xmlrpc",
+    "zipapp",
+    "zipfile",
+    "zipimport",
+    "zlib",
+    "zoneinfo",
+];
+
+/// Is `module` part of the standard library?
+pub fn is_stdlib(module: &str) -> bool {
+    STDLIB.binary_search(&module).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_is_sorted_for_binary_search() {
+        let mut sorted = STDLIB.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, STDLIB, "STDLIB must stay sorted");
+    }
+
+    #[test]
+    fn recognizes_common_stdlib() {
+        for m in [
+            "os",
+            "sys",
+            "json",
+            "asyncio",
+            "pathlib",
+            "typing",
+            "dataclasses",
+        ] {
+            assert!(is_stdlib(m), "{m} should be stdlib");
+        }
+    }
+
+    #[test]
+    fn third_party_is_not_stdlib() {
+        for m in ["numpy", "requests", "cv2", "mediapipe", "torch"] {
+            assert!(!is_stdlib(m), "{m} should not be stdlib");
+        }
+    }
+
+    #[test]
+    fn removed_modules_still_count_as_stdlib() {
+        // Dropped in 3.12, but importing it should never suggest a PyPI install.
+        assert!(is_stdlib("distutils"));
+        assert!(is_stdlib("imp"));
+    }
+}
