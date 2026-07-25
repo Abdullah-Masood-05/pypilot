@@ -1,0 +1,21 @@
+{
+  "_comment": "Recorded from PyPI. 0.10.35 ships py3-none wheels: platform-specific but interpreter-agnostic, so it installs on any CPython 3.x. This is why an unpinned mediapipe reports support all the way to 3.14.",
+  "info": {
+    "name": "mediapipe",
+    "version": "0.10.35",
+    "requires_python": null
+  },
+  "urls": [
+    { "filename": "mediapipe-0.10.35-py3-none-manylinux_2_28_x86_64.whl", "packagetype": "bdist_wheel", "yanked": false },
+    { "filename": "mediapipe-0.10.35-py3-none-macosx_11_0_arm64.whl", "packagetype": "bdist_wheel", "yanked": false },
+    { "filename": "mediapipe-0.10.35-py3-none-win_amd64.whl", "packagetype": "bdist_wheel", "yanked": false },
+    { "filename": "mediapipe-0.10.35-py3-none-win_arm64.whl", "packagetype": "bdist_wheel", "yanked": false }
+  ],
+  "releases": {
+    "0.10.9": [],
+    "0.10.14": [],
+    "0.10.20": [],
+    "0.10.35": [],
+    "0.11.0rc1": []
+  }
+}

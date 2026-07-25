@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use pypilot::core::interpreter::Interpreter;
 use pypilot::core::pip;
 use pypilot::core::platform::{Arch, Os, Platform};
-use pypilot::core::project::ProjectDeps;
+use pypilot::core::project::{ProjectDeps, Requirement};
 use pypilot::core::solver::{synthesize, EnvSummary};
 use pypilot::core::{FixKind, Severity};
 use pypilot::pypi::pyversion::PyVersion;
@@ -40,7 +40,7 @@ fn mediapipe_source() -> FixtureSource {
 fn python_project(pkgs: &[&str]) -> ProjectDeps {
     ProjectDeps {
         sources: vec!["requirements.txt".into()],
-        packages: pkgs.iter().map(|s| s.to_string()).collect(),
+        packages: pkgs.iter().map(|s| Requirement::any(*s)).collect(),
         ..Default::default()
     }
 }
@@ -50,7 +50,7 @@ fn python_project(pkgs: &[&str]) -> ProjectDeps {
 #[tokio::test]
 async fn mediapipe_on_313_is_diagnosed_and_312_suggested() {
     let src = mediapipe_source();
-    let report = analyze(&src, linux(), &["mediapipe".to_string()]).await;
+    let report = analyze(&src, linux(), &[Requirement::any("mediapipe")]).await;
 
     // Supported set is exactly 3.9–3.12.
     assert_eq!(report.intersection.to_range_string(), "3.9–3.12");
@@ -87,7 +87,7 @@ async fn intersection_respects_the_tightest_dependency() {
     let report = analyze(
         &src,
         linux(),
-        &["mediapipe".to_string(), "numpy".to_string()],
+        &[Requirement::any("mediapipe"), Requirement::any("numpy")],
     )
     .await;
     assert_eq!(report.suggested_python(), Some(PyVersion::py3(12)));
@@ -102,7 +102,7 @@ async fn intersection_respects_the_tightest_dependency() {
 async fn pip_mode_requires_preinstalled_interpreter() {
     // Same analysis as uv mode — the engine is package-manager-agnostic.
     let src = mediapipe_source();
-    let report = analyze(&src, linux(), &["mediapipe".to_string()]).await;
+    let report = analyze(&src, linux(), &[Requirement::any("mediapipe")]).await;
     let target = report.suggested_python().unwrap();
     assert_eq!(target, PyVersion::py3(12));
 
