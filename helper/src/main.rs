@@ -24,7 +24,7 @@ fn main() -> ExitCode {
             lsp::run_stdio();
             ExitCode::SUCCESS
         }
-        "doctor" | "setup" | "check" | "fix" => {
+        "doctor" | "setup" | "check" | "fix" | "install" => {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -62,14 +62,15 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "pypilot {ver} — deterministic Python environment doctor\n\n\
-         USAGE:\n    pypilot <MODE> [--path <dir>]\n\n\
+        "pypilot {ver}, a deterministic Python environment doctor\n\n\
+         USAGE:\n    pypilot <MODE> [ARG] [--path <dir>]\n\n\
          MODES:\n\
-         \x20   doctor    Read-only environment + compatibility report\n\
-         \x20   setup     Bootstrap the environment (uv by default, pip if configured)\n\
-         \x20   lsp       Run as an LSP server over stdio (used by the Zed extension)\n\
-         \x20   check     [phase 2] Compatibility report for one package\n\
-         \x20   fix       [phase 2] Recompute + recreate the environment\n\n\
+         \x20   doctor            Read-only environment and compatibility report\n\
+         \x20   setup             Build the environment (uv by default, pip if configured)\n\
+         \x20   check <package>   Can this package run on this project's Python?\n\
+         \x20   install <package> Install one package and record it in the manifest\n\
+         \x20   fix python        Rebuild the environment on the right Python version\n\
+         \x20   lsp               Run as an LSP server over stdio, used by the Zed extension\n\n\
          OPTIONS:\n\
          \x20   --path <dir>   Workspace directory to analyze (default: current dir)\n",
         ver = env!("CARGO_PKG_VERSION")
