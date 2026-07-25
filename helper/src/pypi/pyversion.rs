@@ -198,7 +198,11 @@ pub fn parse_requires_python(spec: &str) -> PyVersionSet {
 }
 
 /// One comparator clause from a specifier, e.g. `>=3.8` or `~=3.9` or `!=3.10.*`.
-struct Clause {
+///
+/// Shared with [`crate::pypi::version`], which applies the same grammar to
+/// package versions rather than interpreter versions. The comparison rules are
+/// identical; only the meaning of the numbers differs.
+pub(crate) struct Clause {
     op: Op,
     version: Vec<u64>,
     /// True for `==3.10.*` style prefix-wildcard matching.
@@ -206,7 +210,7 @@ struct Clause {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Op {
+pub(crate) enum Op {
     Ge,
     Le,
     Gt,
@@ -217,7 +221,7 @@ enum Op {
 }
 
 impl Clause {
-    fn parse(s: &str) -> Option<Clause> {
+    pub(crate) fn parse(s: &str) -> Option<Clause> {
         let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
             (Op::Ge, r)
         } else if let Some(r) = s.strip_prefix("<=") {
@@ -255,7 +259,7 @@ impl Clause {
         })
     }
 
-    fn matches(&self, candidate: &[u64]) -> bool {
+    pub(crate) fn matches(&self, candidate: &[u64]) -> bool {
         match self.op {
             Op::Ge => cmp(candidate, &self.version) >= 0,
             Op::Gt => cmp(candidate, &self.version) > 0,
