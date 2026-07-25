@@ -162,6 +162,22 @@ pub async fn sync(uv: &UvInfo, cwd: &Path) -> crate::Result<Output> {
     command::run(&uv.path, &["sync"], Some(cwd)).await
 }
 
+/// `uv add <pkgs...>` — records the dependency in pyproject.toml and installs it.
+/// Preferred over `uv pip install` for pyproject projects because uv edits the
+/// manifest itself, preserving formatting and comments.
+pub async fn add(uv: &UvInfo, packages: &[String], cwd: &Path) -> crate::Result<Output> {
+    let mut args: Vec<String> = vec!["add".into()];
+    args.extend(packages.iter().cloned());
+    command::run(&uv.path, &args, Some(cwd)).await
+}
+
+/// `uv pip install <pkgs...>` into the project venv.
+pub async fn pip_install(uv: &UvInfo, packages: &[String], cwd: &Path) -> crate::Result<Output> {
+    let mut args: Vec<String> = vec!["pip".into(), "install".into()];
+    args.extend(packages.iter().cloned());
+    command::run(&uv.path, &args, Some(cwd)).await
+}
+
 /// `uv pip install -r requirements.txt`.
 pub async fn pip_install_requirements(
     uv: &UvInfo,
