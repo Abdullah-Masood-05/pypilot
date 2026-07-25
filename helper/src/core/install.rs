@@ -186,7 +186,7 @@ pub async fn recreate_with_python(
                 return Ok(summary);
             }
 
-            // `uv venv` replaces an existing environment in place.
+            // create_venv passes --clear, so an existing environment is replaced.
             match uv::create_venv(&uv_info, version, &venv_path, workspace).await {
                 Ok(out) if out.success() => push(
                     &mut summary,

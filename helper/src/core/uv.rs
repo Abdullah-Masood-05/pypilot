@@ -145,16 +145,31 @@ pub async fn python_install(uv: &UvInfo, version: PyVersion, cwd: &Path) -> crat
     .await
 }
 
-/// `uv venv --python <X.Y> <path>`.
+/// `uv venv --clear --python <X.Y> <path>`.
+///
+/// `--clear` is not optional for us. Since uv 0.9 the command refuses to touch a
+/// directory that already holds an environment, which would make both the
+/// bootstrap and the rebuild action fail on every project that has been set up
+/// once already. Replacing is what the caller means in both cases.
 pub async fn create_venv(
     uv: &UvInfo,
     version: PyVersion,
     venv_path: &Path,
     cwd: &Path,
 ) -> crate::Result<Output> {
-    let venv = venv_path.to_string_lossy().into_owned();
-    let ver = version.to_string();
-    command::run(&uv.path, &["venv", "--python", &ver, &venv], Some(cwd)).await
+    command::run(&uv.path, &venv_args(version, venv_path), Some(cwd)).await
+}
+
+/// The argument vector for [`create_venv`], split out so a test can assert on it
+/// without needing a uv binary present.
+fn venv_args(version: PyVersion, venv_path: &Path) -> Vec<String> {
+    vec![
+        "venv".to_string(),
+        "--clear".to_string(),
+        "--python".to_string(),
+        version.to_string(),
+        venv_path.to_string_lossy().into_owned(),
+    ]
 }
 
 /// `uv sync` (pyproject/lockfile projects).
@@ -348,6 +363,30 @@ mod tests {
                 arch: Arch::X86_64
             }),
             "uv-x86_64-pc-windows-msvc.zip"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_venv_passes_clear() {
+        // Regression guard. Without --clear, `uv venv` errors out on any project
+        // that already has an environment, which breaks both `setup` on a second
+        // run and every rebuild action.
+        let uv = UvInfo {
+            path: PathBuf::from("uv-does-not-exist-here"),
+            version: "0.0.0".into(),
+            managed: false,
+        };
+        // The spawn fails (no such binary), but the arg vector is what matters,
+        // so assert on the command we would have run.
+        let args = venv_args(PyVersion::py3(12), Path::new(".venv"));
+        assert!(
+            args.iter().any(|a| a == "--clear"),
+            "uv venv must replace an existing environment, got {args:?}"
+        );
+        assert!(
+            create_venv(&uv, PyVersion::py3(12), Path::new(".venv"), Path::new("."))
+                .await
+                .is_err()
         );
     }
 
