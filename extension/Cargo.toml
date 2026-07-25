@@ -1,13 +1,21 @@
+# Every field here is written out in full, deliberately.
+#
+# Zed installs a dev extension as a symlink or junction into its own data
+# directory and builds it from there. Cargo resolves the parent directory of
+# that link, not of the link target, so it never finds this repo's workspace
+# root and any `field.workspace = true` fails with "failed to find a workspace
+# root". Keep this manifest standalone.
 [package]
 name = "pypilot-zed"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
 # Must be one of the licenses Zed's extension registry accepts, since this crate
-# is what compiles into the binary they distribute. AGPL is not on that list.
+# is what compiles into the binary they distribute. AGPL is not on that list,
+# which is why the helper and the extension are licensed separately.
 license = "Apache-2.0"
-repository.workspace = true
-authors.workspace = true
+repository = "https://github.com/Abdullah-Masood-05/pypilot"
+authors = ["PyPilot contributors"]
 description = "Zed shim for PyPilot. Downloads the helper binary for your platform and registers it as a Python language server."
 
 [lib]
