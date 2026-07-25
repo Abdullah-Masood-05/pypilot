@@ -10,7 +10,11 @@
 //! always has a correct snapshot; the runtime refresh (7-day TTL per F7) will
 //! overlay newer copies fetched from the project repo.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
+
+use serde::Deserialize;
 
 use crate::core::Finding;
 use crate::settings::Settings;
@@ -73,6 +77,38 @@ impl DataStore {
     }
 }
 
+#[derive(Deserialize)]
+struct ImportMapFile {
+    map: HashMap<String, String>,
+}
+
+/// Import name to PyPI package name, parsed once on first use.
+fn import_map() -> &'static HashMap<String, String> {
+    static MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        serde_json::from_str::<ImportMapFile>(IMPORT_MAP_JSON)
+            .map(|f| f.map)
+            .unwrap_or_default()
+    })
+}
+
+/// Resolve an import name to the PyPI package that provides it.
+///
+/// Unlisted names resolve to themselves, which is usually right and occasionally
+/// a typo. Callers must show the resolved name in any install prompt and never
+/// act on it silently: that display step is the whole typosquatting defence.
+pub fn resolve_package(import_name: &str) -> String {
+    import_map()
+        .get(import_name)
+        .cloned()
+        .unwrap_or_else(|| import_name.to_string())
+}
+
+/// True when the name came from the bundled table rather than falling through.
+pub fn is_mapped(import_name: &str) -> bool {
+    import_map().contains_key(import_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +119,27 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(NVIDIA_JSON).unwrap();
         serde_json::from_str::<serde_json::Value>(FRAMEWORKS_JSON).unwrap();
         serde_json::from_str::<serde_json::Value>(IMPORT_MAP_JSON).unwrap();
+    }
+
+    #[test]
+    fn maps_the_classic_mismatches() {
+        assert_eq!(resolve_package("cv2"), "opencv-python");
+        assert_eq!(resolve_package("PIL"), "pillow");
+        assert_eq!(resolve_package("sklearn"), "scikit-learn");
+        assert_eq!(resolve_package("yaml"), "PyYAML");
+    }
+
+    #[test]
+    fn unmapped_names_resolve_to_themselves() {
+        assert_eq!(resolve_package("mediapipe"), "mediapipe");
+        assert_eq!(resolve_package("requests"), "requests");
+        assert!(!is_mapped("mediapipe"));
+        assert!(is_mapped("cv2"));
+    }
+
+    #[test]
+    fn map_is_not_empty() {
+        // A parse failure would silently degrade every lookup to identity.
+        assert!(import_map().len() > 20);
     }
 }
