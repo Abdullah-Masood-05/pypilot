@@ -19,6 +19,15 @@ use crate::pypi::metadata::PackageMetadata;
 /// 24 hours, in seconds — TTL for "latest version" lookups.
 const LATEST_TTL_SECS: u64 = 24 * 60 * 60;
 
+/// Bumped whenever the shape of a cached document changes.
+///
+/// The version is part of the path, so entries written by an older build are
+/// simply never read rather than being deserialized into a struct that has
+/// since grown a field. Missing the bump on the release that added the version
+/// list made every cached package look like it had no releases at all, which
+/// silently broke pinned dependencies.
+const SCHEMA: &str = "v2";
+
 #[derive(Debug, Serialize, Deserialize)]
 struct CachedLatest {
     fetched_at_unix: u64,
@@ -36,13 +45,20 @@ impl Cache {
     /// Open the on-disk cache under the platform cache dir.
     pub fn open() -> Cache {
         Cache {
-            root: Some(platform::cache_dir().join("pypi")),
+            root: Some(platform::cache_dir().join("pypi").join(SCHEMA)),
         }
     }
 
     /// A no-op cache (never reads or writes).
     pub fn disabled() -> Cache {
         Cache { root: None }
+    }
+
+    /// A cache rooted at an explicit directory, for tests.
+    pub fn at(root: impl Into<PathBuf>) -> Cache {
+        Cache {
+            root: Some(root.into()),
+        }
     }
 
     fn latest_path(&self, name: &str) -> Option<PathBuf> {
@@ -78,14 +94,9 @@ impl Cache {
     }
 
     /// Persist freshly-fetched metadata into both tiers.
-    pub fn put(&self, name: &str, metadata: &PackageMetadata) {
-        // Immutable per-release entry (cache forever).
-        if let Some(path) = self.release_path(name, &metadata.info.version) {
-            write_json(
-                &path, metadata,
-                /* overwrite = */ false, // immutable: don't rewrite if it exists
-            );
-        }
+    pub fn put_latest(&self, name: &str, metadata: &PackageMetadata) {
+        self.put_release(name, metadata);
+
         // Latest pointer with timestamp (24h TTL).
         if let Some(path) = self.latest_path(name) {
             let cached = CachedLatest {
@@ -93,6 +104,20 @@ impl Cache {
                 metadata: metadata.clone(),
             };
             write_json(&path, &cached, /* overwrite = */ true);
+        }
+    }
+
+    /// Store one specific release, and only that.
+    ///
+    /// Deliberately leaves the latest pointer alone. Resolving a pin fetches an
+    /// older release, and writing that document into the latest slot would make
+    /// every later lookup for the package answer with the older release.
+    pub fn put_release(&self, name: &str, metadata: &PackageMetadata) {
+        if let Some(path) = self.release_path(name, &metadata.info.version) {
+            write_json(
+                &path, metadata,
+                /* overwrite = */ false, // immutable: don't rewrite if it exists
+            );
         }
     }
 }
@@ -122,4 +147,59 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pypi::metadata::Info;
+
+    fn meta(version: &str) -> PackageMetadata {
+        PackageMetadata {
+            info: Info {
+                name: "mediapipe".into(),
+                version: version.into(),
+                requires_python: None,
+            },
+            urls: vec![],
+            versions: vec!["0.10.14".into(), "0.10.35".into()],
+        }
+    }
+
+    fn scratch(tag: &str) -> Cache {
+        let dir = std::env::temp_dir().join(format!("pypilot-cache-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        Cache::at(dir)
+    }
+
+    #[test]
+    fn storing_an_older_release_does_not_move_the_latest_pointer() {
+        // The regression: resolving a pin fetches an older release, and writing
+        // that into the latest slot made every later lookup answer with it.
+        let cache = scratch("tiers");
+        cache.put_latest("mediapipe", &meta("0.10.35"));
+        cache.put_release("mediapipe", &meta("0.10.14"));
+
+        let latest = cache.get_latest("mediapipe").expect("latest still cached");
+        assert_eq!(
+            latest.info.version, "0.10.35",
+            "the newest release must stay the latest answer"
+        );
+
+        let pinned = cache
+            .get_release("mediapipe", "0.10.14")
+            .expect("the older release is retrievable on its own");
+        assert_eq!(pinned.info.version, "0.10.14");
+    }
+
+    #[test]
+    fn version_list_survives_a_cache_round_trip() {
+        // Serialized as an array, read back through the same deserializer that
+        // handles PyPI's releases object. Losing this silently breaks pins.
+        let cache = scratch("roundtrip");
+        cache.put_latest("mediapipe", &meta("0.10.35"));
+
+        let back = cache.get_latest("mediapipe").unwrap();
+        assert_eq!(back.versions, vec!["0.10.14", "0.10.35"]);
+    }
 }
