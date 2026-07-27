@@ -16,6 +16,7 @@ use futures::future::join_all;
 
 use crate::core::imports::{self, ImportRef};
 use crate::core::installed::Installed;
+use crate::core::modules;
 use crate::core::platform::Platform;
 use crate::core::stdlib;
 use crate::matrix;
@@ -41,6 +42,20 @@ pub enum Problem {
     NoEnvironment { target: Option<PyVersion> },
     /// PyPI has no such project. Usually a typo, sometimes a private index.
     NotOnPyPi,
+    /// The package is installed, but the attribute this file uses is not in it.
+    ///
+    /// This is the case metadata cannot see. mediapipe 0.10.35 installs on every
+    /// CPython 3.x and then raises on `mp.solutions`, because that release
+    /// dropped the legacy API. Reading the package on disk catches it at edit
+    /// time rather than at run time.
+    AttributeMissing {
+        /// The attribute the buffer reaches for, e.g. `solutions`.
+        attribute: String,
+        /// Version of the package that is actually installed.
+        installed_version: Option<String>,
+        /// What the package does expose, to point at the replacement.
+        available: Vec<String>,
+    },
 }
 
 /// One actionable import.
@@ -176,6 +191,70 @@ pub async fn analyze_buffer<S: MetadataSource>(
         .collect()
 }
 
+/// Check attribute accesses against what the installed packages actually expose.
+///
+/// Runs only over imports that are installed, since an uninstalled package has
+/// nothing on disk to read. Purely local: a directory listing and one file read
+/// per package, no network.
+pub fn check_attributes(source: &str, venv: &Path, installed: &Installed) -> Vec<Finding> {
+    let mut out = Vec::new();
+
+    for import in imports::extract(source) {
+        if stdlib::is_stdlib(&import.module) {
+            continue;
+        }
+        // Only `import x` / `import x as y` bind the package root.
+        let Some(binding) = import.binding.clone() else {
+            continue;
+        };
+        let package = matrix::resolve_package(&import.module);
+        if !installed.contains(&package) {
+            continue;
+        }
+        let Some(package_dir) = modules::find_package(venv, &import.module) else {
+            continue;
+        };
+
+        let uses = imports::extract_attr_uses(source, &[binding]);
+        if uses.is_empty() {
+            continue;
+        }
+
+        let installed_version = installed.version_of(&package);
+        let mut reported: HashSet<String> = HashSet::new();
+
+        for used in uses {
+            if !reported.insert(used.attr.clone()) {
+                continue; // one diagnostic per attribute, not per occurrence
+            }
+            let modules::AttrStatus::Missing { available } =
+                modules::attribute_status(&package_dir, &used.attr)
+            else {
+                continue;
+            };
+
+            out.push(Finding {
+                import: ImportRef {
+                    module: import.module.clone(),
+                    binding: import.binding.clone(),
+                    line: used.line,
+                    start: used.start,
+                    end: used.end,
+                },
+                package: package.clone(),
+                renamed: false,
+                problem: Problem::AttributeMissing {
+                    attribute: used.attr,
+                    installed_version: installed_version.clone(),
+                    available,
+                },
+            });
+        }
+    }
+
+    out
+}
+
 /// Module names that belong to this project, so `import utils` next to
 /// `utils.py` never gets reported as a missing PyPI package.
 fn local_modules(workspace: &Path) -> HashSet<String> {
@@ -220,6 +299,7 @@ mod tests {
     fn import_of(module: &str) -> ImportRef {
         ImportRef {
             module: module.into(),
+            binding: Some(module.into()),
             line: 0,
             start: 7,
             end: 7 + module.len() as u32,

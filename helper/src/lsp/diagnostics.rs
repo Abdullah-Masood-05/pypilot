@@ -90,6 +90,41 @@ pub fn to_diagnostic(finding: &Finding) -> Diagnostic {
             (DiagnosticSeverity::WARNING, message, action)
         }
 
+        // The installed release simply does not have this attribute. Nothing to
+        // automate: which version to pin depends on which API the user wants,
+        // so the message names what is there instead and lets them choose.
+        Problem::AttributeMissing {
+            attribute,
+            installed_version,
+            available,
+        } => {
+            let version = installed_version
+                .as_deref()
+                .map(|v| format!(" {v}"))
+                .unwrap_or_default();
+
+            // Listing everything would be noise; a handful points the way.
+            const SHOWN: usize = 8;
+            let mut names: Vec<String> = available.iter().take(SHOWN).cloned().collect();
+            if available.len() > SHOWN {
+                names.push(format!("and {} more", available.len() - SHOWN));
+            }
+            let provides = if names.is_empty() {
+                String::new()
+            } else {
+                format!(" It provides: {}.", names.join(", "))
+            };
+
+            (
+                DiagnosticSeverity::ERROR,
+                format!(
+                    "The installed `{}`{version} has no `{attribute}`.{provides}",
+                    finding.package
+                ),
+                FixAction::None,
+            )
+        }
+
         // Deliberately actionless. Offering to install a name PyPI does not know
         // is how a typo becomes a supply chain incident.
         Problem::NotOnPyPi => (
@@ -222,6 +257,7 @@ mod tests {
         Finding {
             import: ImportRef {
                 module: "cv2".into(),
+                binding: Some("cv2".into()),
                 line: 2,
                 start: 7,
                 end: 10,

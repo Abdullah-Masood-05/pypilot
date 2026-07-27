@@ -241,7 +241,7 @@ async fn run_guardian(shared: Arc<Shared>, uri: Url) {
     let installed = installed::scan(&venv);
     let venv_python = venv_python(&venv);
 
-    let findings = guardian::analyze_buffer(
+    let mut findings = guardian::analyze_buffer(
         &text,
         &root,
         Platform::current(),
@@ -250,6 +250,10 @@ async fn run_guardian(shared: Arc<Shared>, uri: Url) {
         &shared.source,
     )
     .await;
+
+    // Packages that are installed still have to expose what the file uses.
+    // Purely local, so this costs a directory listing rather than a request.
+    findings.extend(guardian::check_attributes(&text, &venv, &installed));
 
     let published: Vec<Diagnostic> = findings.iter().map(diagnostics::to_diagnostic).collect();
     shared
