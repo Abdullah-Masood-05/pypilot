@@ -225,7 +225,15 @@ pub async fn pip_install_requirements(
     command::run(&uv.path, &["pip", "install", "-r", &req], Some(cwd)).await
 }
 
-/// `uv pip install --dry-run --python <X.Y> <pkgs...>` — fast resolvability check.
+/// `uv pip install --dry-run --system --python <X.Y> <pkgs...>` — fast
+/// resolvability check against a real interpreter, without needing a venv.
+///
+/// `--system` matters: without it uv refuses with "No virtual environment
+/// found" when no `.venv` exists yet, which is exactly the situation this
+/// confirmation is most useful in (before committing to a full setup). It
+/// still requires `version` to be an interpreter uv can actually find on the
+/// machine — callers should only call this once the target is known to exist,
+/// e.g. from [`crate::core::probe::Probes::interpreters`].
 pub async fn dry_run_resolve(
     uv: &UvInfo,
     version: PyVersion,
@@ -236,6 +244,7 @@ pub async fn dry_run_resolve(
         "pip".into(),
         "install".into(),
         "--dry-run".into(),
+        "--system".into(),
         "--python".into(),
         version.to_string(),
     ];
