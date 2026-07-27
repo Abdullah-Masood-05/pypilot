@@ -44,6 +44,20 @@ back. No GPU gets the smaller CPU index; Apple Silicon gets an MPS note.
 **A pin that changes the answer.** `mediapipe==0.10.14` is judged on that
 release's wheels, which stop at 3.12, not on the newest release's.
 
+## Install
+
+Search for "PyPilot" in Zed's extension panel and install it from there. Opening
+a Python project runs an environment scan automatically and shows a
+notification if something needs fixing.
+
+### From a local build
+
+To try the extension before it's in the registry, put `pypilot` on your PATH
+with `cargo install --path helper`, then run `zed: install dev extension` from
+the command palette and pick the `extension` directory. The shim prefers a
+`pypilot` already on PATH over downloading a release, so your local build is
+what runs.
+
 ## Status
 
 All four roadmap phases are implemented: the skeleton and CI, the compatibility
@@ -153,11 +167,6 @@ cargo build -p pypilot-zed --target wasm32-unknown-unknown --release
 The tests never touch the network. PyPI responses are recorded JSON fixtures,
 and the platform is pinned to Linux x86-64 inside the wheel tag tests so results
 don't change with the machine running them.
-
-To try the extension against a local build, put `pypilot` on your PATH with
-`cargo install --path helper`, then use `zed: install dev extension` and pick the
-`extension` directory. The shim prefers a `pypilot` already on PATH over
-downloading a release.
 
 ## License
 
