@@ -53,5 +53,44 @@
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "reveal": "always"
+  },
+  {
+    "label": "pypilot: fix python version",
+    "command": "pypilot",
+    "args": ["fix", "python"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "save": "all",
+    "reveal": "always"
+  },
+  {
+    "label": "pypilot: fix cuda (re-pin torch/tensorflow to the driver)",
+    "command": "pypilot",
+    "args": ["fix", "cuda"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "save": "all",
+    "reveal": "always"
+  },
+  {
+    "label": "pypilot: update data (refresh bundled tables)",
+    "command": "pypilot",
+    "args": ["update-data"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "pypilot: migrate conda to pyproject.toml",
+    "command": "pypilot",
+    "args": ["migrate-conda"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "save": "all",
+    "reveal": "always"
   }
 ]
