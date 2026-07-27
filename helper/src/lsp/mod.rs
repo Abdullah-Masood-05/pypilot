@@ -431,7 +431,18 @@ async fn scan_and_notify(client: &Client, source: &PyPiClient, root: &Path, expl
         return;
     }
 
-    if assessment.all_good() {
+    // "problems-only" (the default) only raises a toast for Warning/Error, per
+    // `all_good()`. "all" also surfaces Info-only results (an MPS note, a
+    // conda-migration hint, a driver-matched CUDA build) instead of treating
+    // them as nothing to report — that is the entire distinction the setting
+    // documents; unsolicited scans never toast on Info under either tier.
+    let has_something_to_say = if settings.notifications == Notifications::All {
+        !assessment.findings.is_empty()
+    } else {
+        !assessment.all_good()
+    };
+
+    if !has_something_to_say {
         if explicit {
             client
                 .show_message(MessageType::INFO, all_good_summary(&assessment))
@@ -448,7 +459,10 @@ async fn scan_and_notify(client: &Client, source: &PyPiClient, root: &Path, expl
     ];
     let severity = match assessment.worst_severity() {
         Some(Severity::Error) => MessageType::ERROR,
-        _ => MessageType::WARNING,
+        Some(Severity::Warning) => MessageType::WARNING,
+        // Only reachable under the "all" tier: an Info-only result deserves an
+        // FYI toast, not one styled like a problem.
+        Some(Severity::Info) | None => MessageType::INFO,
     };
 
     let chosen = client
@@ -647,6 +661,8 @@ fn details_markdown(a: &Assessment) -> String {
                 ));
             } else if f.fix == FixKind::SetupEnvironment {
                 s.push_str("\n_Fix: run \"Fix everything\", or `pypilot setup`._\n");
+            } else if f.fix == FixKind::MigrateConda {
+                s.push_str("\n_Fix: run `pypilot migrate-conda`._\n");
             }
             s.push('\n');
         }
