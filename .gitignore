@@ -2,8 +2,11 @@
 **/*.rs.bk
 Cargo.lock.orig
 
-# Zed extension build artifacts
+# Zed extension build artifacts. Cargo.lock here is a byproduct of Zed
+# building the extension standalone from its installed junction, not the
+# workspace lockfile at the repo root; regenerated on every such build.
 /extension/target
+/extension/Cargo.lock
 *.wasm
 
 # Local-only Claude Code settings (kept on disk, never tracked)
