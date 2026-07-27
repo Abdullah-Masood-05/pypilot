@@ -4,6 +4,12 @@
 //! environment on a different Python before adding it. Both record the package
 //! in the project manifest, because an install that vanishes on the next clone
 //! has not really solved the user's problem.
+//!
+//! Installing `torch` or `tensorflow` here also consults F2's solver (see
+//! [`crate::matrix::solve`]) for an index URL matched to the machine's GPU
+//! driver, so the quick fix that follows a bare `import torch` pulls the CUDA
+//! build the driver can actually run rather than whatever the default index
+//! happens to hand back.
 
 use std::path::Path;
 
@@ -11,6 +17,7 @@ use anyhow::bail;
 
 use crate::core::setup::{SetupSummary, Step};
 use crate::core::{pip, uv};
+use crate::matrix;
 use crate::pypi::pyversion::PyVersion;
 use crate::settings::{PackageManager, Settings};
 
@@ -32,6 +39,16 @@ pub async fn install_package(
     let pkgs = vec![package.to_string()];
     let has_pyproject = workspace.join("pyproject.toml").is_file();
 
+    // Unpinned here — this path installs whatever "the package" resolves to
+    // right now, so F2 solves against the newest curated release.
+    let hardware = matrix::solve::solve_framework(package, None).await;
+    if let Some(solved) = &hardware {
+        if let Some(finding) = &solved.finding {
+            push(&mut summary, "GPU/CUDA check", true, &finding.detail);
+        }
+    }
+    let index_url = hardware.as_ref().and_then(|h| h.index_url.as_deref());
+
     match settings.package_manager {
         PackageManager::Uv => {
             let uv_info = match uv::ensure(settings).await {
@@ -44,7 +61,7 @@ pub async fn install_package(
 
             // `uv add` writes pyproject itself; otherwise install then record.
             if has_pyproject {
-                match uv::add(&uv_info, &pkgs, workspace).await {
+                match uv::add(&uv_info, &pkgs, index_url, workspace).await {
                     Ok(out) if out.success() => {
                         push(
                             &mut summary,
@@ -67,7 +84,7 @@ pub async fn install_package(
                     ),
                 }
             } else {
-                match uv::pip_install(&uv_info, &pkgs, workspace).await {
+                match uv::pip_install(&uv_info, &pkgs, index_url, workspace).await {
                     Ok(out) if out.success() => {
                         push(
                             &mut summary,
@@ -103,7 +120,7 @@ pub async fn install_package(
                 );
                 return Ok(summary);
             }
-            match pip::install_packages(&venv, &pkgs, workspace).await {
+            match pip::install_packages(&venv, &pkgs, index_url, workspace).await {
                 Ok(out) if out.success() => {
                     push(
                         &mut summary,

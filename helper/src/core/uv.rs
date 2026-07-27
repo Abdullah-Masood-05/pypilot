@@ -180,15 +180,37 @@ pub async fn sync(uv: &UvInfo, cwd: &Path) -> crate::Result<Output> {
 /// `uv add <pkgs...>` — records the dependency in pyproject.toml and installs it.
 /// Preferred over `uv pip install` for pyproject projects because uv edits the
 /// manifest itself, preserving formatting and comments.
-pub async fn add(uv: &UvInfo, packages: &[String], cwd: &Path) -> crate::Result<Output> {
+pub async fn add(
+    uv: &UvInfo,
+    packages: &[String],
+    index_url: Option<&str>,
+    cwd: &Path,
+) -> crate::Result<Output> {
     let mut args: Vec<String> = vec!["add".into()];
+    if let Some(url) = index_url {
+        args.push("--index".into());
+        args.push(url.to_string());
+    }
     args.extend(packages.iter().cloned());
     command::run(&uv.path, &args, Some(cwd)).await
 }
 
 /// `uv pip install <pkgs...>` into the project venv.
-pub async fn pip_install(uv: &UvInfo, packages: &[String], cwd: &Path) -> crate::Result<Output> {
+///
+/// `index_url` overrides the default index for this call only — used to point
+/// a torch/tensorflow install at the CUDA build matched to the machine's GPU
+/// driver (see [`crate::matrix::solve`]), without affecting any other package.
+pub async fn pip_install(
+    uv: &UvInfo,
+    packages: &[String],
+    index_url: Option<&str>,
+    cwd: &Path,
+) -> crate::Result<Output> {
     let mut args: Vec<String> = vec!["pip".into(), "install".into()];
+    if let Some(url) = index_url {
+        args.push("--index-url".into());
+        args.push(url.to_string());
+    }
     args.extend(packages.iter().cloned());
     command::run(&uv.path, &args, Some(cwd)).await
 }

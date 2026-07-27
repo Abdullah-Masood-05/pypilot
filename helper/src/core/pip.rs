@@ -43,13 +43,22 @@ pub async fn install_requirements(
 }
 
 /// `python -m pip install <pkgs...>` inside the venv.
+///
+/// `index_url` overrides the default index for this call only — used for a
+/// torch/tensorflow install matched to the machine's GPU driver (see
+/// [`crate::matrix::solve`]).
 pub async fn install_packages(
     venv: &Path,
     packages: &[String],
+    index_url: Option<&str>,
     cwd: &Path,
 ) -> crate::Result<Output> {
     let py = venv_python(venv);
     let mut args: Vec<String> = vec!["-m".into(), "pip".into(), "install".into()];
+    if let Some(url) = index_url {
+        args.push("--index-url".into());
+        args.push(url.to_string());
+    }
     args.extend(packages.iter().cloned());
     command::run(&py, &args, Some(cwd)).await
 }
