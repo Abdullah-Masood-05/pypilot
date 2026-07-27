@@ -240,6 +240,16 @@ pub async fn dry_run_resolve(
     packages: &[String],
     cwd: &Path,
 ) -> crate::Result<Output> {
+    command::run(&uv.path, &dry_run_args(version, packages), Some(cwd)).await
+}
+
+/// The argument vector for [`dry_run_resolve`], split out so a test can assert
+/// on it without needing a uv binary present. `--python <version>` pins the
+/// resolve to the caller-supplied target explicitly; `--system` only lifts the
+/// "must be inside a venv" requirement, it does not select an interpreter on
+/// its own, so this can never silently fall back to whatever Python is first
+/// on `$PATH`.
+fn dry_run_args(version: PyVersion, packages: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "pip".into(),
         "install".into(),
@@ -249,7 +259,7 @@ pub async fn dry_run_resolve(
         version.to_string(),
     ];
     args.extend(packages.iter().cloned());
-    command::run(&uv.path, &args, Some(cwd)).await
+    args
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -419,6 +429,24 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn dry_run_pins_the_given_target_not_whatever_system_python_is() {
+        // Regression guard for a real risk: if this ever dropped back to bare
+        // `--system` with no `--python`, uv would resolve against the first
+        // Python it finds on PATH, which is often the *wrong* one — the whole
+        // reason PyPilot exists is that the system default often isn't the
+        // interpreter the project's dependencies actually support.
+        let system_looking_default = PyVersion::py3(13);
+        let project_target = PyVersion::py3(9);
+        assert_ne!(system_looking_default, project_target);
+
+        let args = dry_run_args(project_target, &["mediapipe".to_string()]);
+        let python_idx = args.iter().position(|a| a == "--python").unwrap();
+        assert_eq!(args[python_idx + 1], project_target.to_string());
+        assert_ne!(args[python_idx + 1], system_looking_default.to_string());
+        assert!(args.iter().any(|a| a == "--system"));
     }
 
     #[test]
