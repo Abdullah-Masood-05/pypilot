@@ -320,12 +320,77 @@ fn parse_environment_yml(text: &str) -> (Vec<Requirement>, Option<String>) {
                         .map(|v| v.trim().trim_matches('=').to_string())
                         .filter(|s| !s.is_empty());
                 } else if !name_part.is_empty() {
-                    names.push(Requirement::any(normalize_name(name_part)));
+                    names.push(Requirement {
+                        name: normalize_name(name_part),
+                        spec: conda_spec_to_pep440(&item[name_part.len()..]),
+                    });
                 }
             }
         }
     }
     (names, python)
+}
+
+/// Convert the version part of a conda dependency line into PEP 440.
+///
+/// conda's grammar overlaps with PEP 440 but is not identical:
+///   * a single `=` is a *prefix* match (`numpy=1.24` allows 1.24.1), which
+///     PEP 440 spells `==1.24.*`;
+///   * a third field is a build string (`numpy=1.24=py311h5a2b...`), which has
+///     no PyPI equivalent and is dropped;
+///   * `>=`, `<=`, `!=`, `<`, `>` and `==` already mean the same thing.
+///
+/// Anything unrecognized yields an empty spec rather than a guess, since a
+/// wrong constraint is worse than an absent one.
+fn conda_spec_to_pep440(rest: &str) -> String {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return String::new();
+    }
+
+    // Two-character operators first, so `>=` is not read as a bare `>`.
+    for op in ["==", ">=", "<=", "!=", "~="] {
+        if let Some(v) = rest.strip_prefix(op) {
+            let v = version_field(v);
+            return if v.is_empty() {
+                String::new()
+            } else {
+                format!("{op}{v}")
+            };
+        }
+    }
+    for op in ['>', '<'] {
+        if let Some(v) = rest.strip_prefix(op) {
+            let v = version_field(v);
+            return if v.is_empty() {
+                String::new()
+            } else {
+                format!("{op}{v}")
+            };
+        }
+    }
+
+    // A lone `=` is conda's prefix match.
+    if let Some(v) = rest.strip_prefix('=') {
+        let v = version_field(v);
+        if v.is_empty() {
+            return String::new();
+        }
+        // An already-exact version stays exact; otherwise widen to the prefix
+        // form so `numpy=1.24` keeps matching 1.24.x as conda intends.
+        return if v.ends_with('*') {
+            format!("=={v}")
+        } else {
+            format!("=={v}.*")
+        };
+    }
+
+    String::new()
+}
+
+/// Take the version out of a conda spec, discarding any build-string field.
+fn version_field(s: &str) -> &str {
+    s.split('=').next().unwrap_or("").trim()
 }
 
 /// Convert a Poetry caret/tilde constraint to an approximate PEP 440 form.
@@ -368,6 +433,61 @@ fn dedupe(mut reqs: Vec<Requirement>) -> Vec<Requirement> {
         true
     });
     reqs
+}
+
+/// Translate a conda `environment.yml` into a minimal PEP 621 `pyproject.toml`,
+/// per F5's "offer translation to pyproject/uv" migration action.
+///
+/// `deps` must have `has_conda_env` set. `project_name` is typically the
+/// workspace directory name. This is deliberately conservative: conda package
+/// names do not always match their PyPI equivalent (and some, like compiled
+/// system libraries, have no PyPI equivalent at all), and guessing a mapping
+/// per name would be exactly the kind of per-library hardcoding F3 refuses to
+/// do elsewhere. Every parsed dependency is carried over as-is, and the caller
+/// is told plainly to review it — an honest starting point, not a silent one.
+pub fn conda_migration_pyproject(deps: &ProjectDeps, project_name: &str) -> String {
+    // normalize_name doesn't touch whitespace (it never appears in a parsed
+    // requirement name), but a directory name like "My Demo Project" needs it
+    // collapsed too to satisfy PEP 621's `[A-Za-z0-9._-]` project name rule.
+    let spaced = project_name.replace(char::is_whitespace, "-");
+    let name = normalize_name(&spaced);
+    let name = if name.is_empty() {
+        "project".to_string()
+    } else {
+        name
+    };
+
+    let requires_python = deps.conda_python.as_deref().map(|v| {
+        let v = v.trim();
+        if v.starts_with(['>', '<', '=', '~', '!']) {
+            v.to_string()
+        } else {
+            format!(">={v}")
+        }
+    });
+
+    let mut out = String::new();
+    out.push_str("[project]\n");
+    out.push_str(&format!("name = \"{name}\"\n"));
+    out.push_str("version = \"0.1.0\"\n");
+    if let Some(rp) = &requires_python {
+        out.push_str(&format!("requires-python = \"{rp}\"\n"));
+    }
+
+    if deps.packages.is_empty() {
+        out.push_str("dependencies = []\n");
+    } else {
+        out.push_str("dependencies = [\n");
+        for req in &deps.packages {
+            out.push_str(&format!("    \"{req}\",\n"));
+        }
+        out.push_str("]\n");
+    }
+
+    // No [build-system] section: this describes an application (a venv plus
+    // dependencies) for uv to manage, not a redistributable package. Adding a
+    // build backend nobody asked for would be an assumption beyond the ask.
+    out
 }
 
 #[cfg(test)]
@@ -435,5 +555,85 @@ requests = "^2.31"
         assert_eq!(py.as_deref(), Some("3.10"));
         assert!(names.iter().any(|r| r.name == "numpy"));
         assert!(!names.iter().any(|r| r.name == "python"));
+    }
+
+    #[test]
+    fn conda_dependency_pins_are_kept() {
+        // Dropping these silently produced a pyproject.toml with no version
+        // constraints at all, which is a different project from the one the
+        // environment.yml described.
+        let text = "dependencies:\n  \
+             - numpy>=1.24\n  \
+             - scipy=1.11\n  \
+             - pandas==2.0.3\n  \
+             - requests\n  \
+             - pip:\n    \
+             - mediapipe==0.10.14\n";
+        let (names, _) = parse_environment_yml(text);
+
+        let spec_of = |n: &str| {
+            names
+                .iter()
+                .find(|r| r.name == n)
+                .map(|r| r.spec.clone())
+                .unwrap_or_else(|| panic!("{n} missing from {names:?}"))
+        };
+        assert_eq!(spec_of("numpy"), ">=1.24");
+        // conda's single `=` is a prefix match, not an exact pin.
+        assert_eq!(spec_of("scipy"), "==1.11.*");
+        assert_eq!(spec_of("pandas"), "==2.0.3");
+        assert_eq!(spec_of("requests"), "");
+        assert_eq!(spec_of("mediapipe"), "==0.10.14");
+    }
+
+    #[test]
+    fn conda_build_strings_are_discarded() {
+        // `name=version=build` has no PyPI equivalent for the build field.
+        let text = "dependencies:\n  - numpy=1.24=py311h5a2b\n";
+        let (names, _) = parse_environment_yml(text);
+        assert_eq!(names[0].spec, "==1.24.*");
+    }
+
+    #[test]
+    fn conda_migration_produces_a_usable_pyproject() {
+        let deps = ProjectDeps {
+            sources: vec!["environment.yml".into()],
+            packages: vec![Requirement::any("numpy"), req("pillow", "==10.0.0")],
+            declared_requires_python: None,
+            has_conda_env: true,
+            conda_python: Some("3.10".to_string()),
+        };
+        let toml = conda_migration_pyproject(&deps, "My Demo Project");
+
+        assert!(toml.contains("name = \"my-demo-project\""));
+        assert!(
+            toml.contains("requires-python = \">=3.10\""),
+            "a bare conda python pin must gain a >= operator: {toml}"
+        );
+        assert!(toml.contains("\"numpy\""));
+        assert!(toml.contains("\"pillow==10.0.0\""));
+        assert!(
+            !toml.contains("build-system"),
+            "an application migration should not assume a build backend"
+        );
+    }
+
+    #[test]
+    fn conda_migration_handles_no_python_pin_and_empty_name() {
+        let deps = ProjectDeps {
+            has_conda_env: true,
+            ..Default::default()
+        };
+        let toml = conda_migration_pyproject(&deps, "");
+        assert!(!toml.contains("requires-python"));
+        assert!(toml.contains("name = \"project\""));
+        assert!(toml.contains("dependencies = []"));
+    }
+
+    fn req(name: &str, spec: &str) -> Requirement {
+        Requirement {
+            name: name.to_string(),
+            spec: spec.to_string(),
+        }
     }
 }
