@@ -6,6 +6,7 @@
 //! the LSP layer and reuses the same [`Assessment`].
 
 pub mod command;
+pub mod gpu;
 pub mod guardian;
 pub mod imports;
 pub mod install;
