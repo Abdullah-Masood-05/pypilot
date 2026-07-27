@@ -25,16 +25,31 @@ packages disagree, and PyPilot says which two and what each one needs.
 Naming the two packages matters more than applying the fix, because a conflict
 between dependencies is the case where the error message tells you least.
 
+## What else it catches
+
+**API that vanished between releases.** Metadata says whether a package will
+install, not whether your code will run against what got installed. mediapipe
+0.10.35 installs on every CPython 3.x and then raises `module 'mediapipe' has
+no attribute 'solutions'`, because that release dropped the legacy API. PyPilot
+reads the installed package on disk, so `mp.solutions` is flagged while you
+type rather than at runtime, along with what the package does provide.
+
+**A GPU driver too old for the wheel.** For pip-installed frameworks the driver
+is what matters, not the system CUDA toolkit: wheels bundle their own runtime
+and drivers are backwards compatible. PyPilot reads `nvidia-smi`, maps the
+driver to the newest CUDA runtime it supports, and picks the matching torch
+build, so an install pulls `cu124` rather than whatever the default index hands
+back. No GPU gets the smaller CPU index; Apple Silicon gets an MPS note.
+
+**A pin that changes the answer.** `mediapipe==0.10.14` is judged on that
+release's wheels, which stop at 3.12, not on the newest release's.
+
 ## Status
 
-Phase 0 and Phase 1 are done: the helper binary, the PyPI compatibility engine,
-the environment bootstrap, and the onboarding notification.
-
-Two features are scaffolded but not implemented. The hardware matrix in
-`matrix/` returns an empty report, so nothing checks GPU drivers or CUDA builds
-yet. There are no per-buffer diagnostics on `import` statements either. Both
-have their module boundaries and call sites in place, so neither needs a
-refactor to land.
+All four roadmap phases are implemented: the skeleton and CI, the compatibility
+engine and bootstrap, the live import guardian, and the hardware layer. What
+remains is publishing to the Zed extension registry, which needs a tagged
+release first.
 
 ## How it fits together
 
@@ -43,13 +58,19 @@ your platform, downloads the matching helper binary, and registers it as a
 language server. It holds no logic of its own, which keeps Zed API changes from
 reaching anything important.
 
-Everything else lives in `helper/`, a native binary with three modes over one
-shared library:
+Everything else lives in `helper/`, a native binary sharing one library across
+every mode:
 
 ```
-pypilot doctor    read-only report, changes nothing
-pypilot setup     build the environment
-pypilot lsp       stdio LSP server, the mode Zed launches
+pypilot doctor            read-only report, changes nothing
+pypilot setup             build the environment
+pypilot check <package>   can this package run on this project's Python?
+pypilot install <pkg>     install one package and record it in the manifest
+pypilot fix python        rebuild the environment on the right version
+pypilot fix cuda          re-pin torch/tensorflow to the driver's build
+pypilot update-data       refresh the bundled driver/framework/import tables
+pypilot migrate-conda     translate environment.yml into pyproject.toml
+pypilot lsp               stdio LSP server, the mode Zed launches
 ```
 
 The helper knows nothing about Zed and works in any terminal or CI job. The
@@ -69,11 +90,11 @@ pypilot/
 ├─ helper/               native binary
 │  ├─ src/
 │  │  ├─ main.rs         mode dispatch
-│  │  ├─ cli/            doctor and setup front ends
-│  │  ├─ lsp/            tower-lsp server, notifications, commands
+│  │  ├─ cli/            one front end per command
+│  │  ├─ lsp/            tower-lsp server, diagnostics, code actions
 │  │  ├─ core/           probes, project parsing, solver, uv and pip drivers
 │  │  ├─ pypi/           metadata client, wheel tag parser, disk cache
-│  │  └─ matrix/         hardware seam (stub)
+│  │  └─ matrix/         GPU driver and framework tables, data refresh
 │  ├─ data/              nvidia.json, frameworks.json, import_map.json
 │  └─ tests/             fixtures and offline integration tests
 ├─ tasks/                Zed task templates
@@ -96,6 +117,17 @@ In pip mode the compatibility checks are identical, because none of that logic
 knows which installer you use. What changes is that pip cannot fetch a missing
 interpreter, so if the project needs Python 3.12 and you don't have it, PyPilot
 says so instead of installing it for you.
+
+`notifications` decides how much reaches the notification: `problems-only`
+raises one for warnings and errors, `all` also surfaces informational findings
+such as the CUDA build it picked, and `off` stays quiet. Diagnostics and code
+actions on your buffers are unaffected by anything except `off`.
+
+`data_refresh_days` is the TTL on the driver, framework and import tables. They
+ship inside the binary, so an offline machine is never wrong, only potentially
+stale; a background refresh replaces them from this repo when the TTL lapses,
+falling back silently to the bundled copy on any failure. `0` disables the
+network entirely, and `pypilot update-data` forces a refresh regardless.
 
 ## Commands
 
