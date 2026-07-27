@@ -105,6 +105,7 @@ async fn compatible_interpreter_gives_a_plain_install() {
 async fn installed_packages_are_silent() {
     let installed = Installed {
         packages: ["mediapipe".to_string()].into_iter().collect(),
+        ..Default::default()
     };
     let findings = analyze_buffer(
         "import mediapipe\n",
@@ -185,4 +186,84 @@ async fn unknown_package_is_flagged_without_an_install() {
 
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].problem, Problem::NotOnPyPi);
+}
+
+// --- Attribute checks against the installed package -------------------------
+//
+// The case metadata cannot answer. mediapipe 0.10.35 installs on any CPython
+// 3.x and then raises `module 'mediapipe' has no attribute 'solutions'`,
+// because the release dropped the legacy API. Reading the package on disk
+// catches it while the file is being edited.
+
+use pypilot::core::guardian::check_attributes;
+
+/// Build a venv containing a package laid out like mediapipe 0.10.35.
+fn venv_with_mediapipe(tag: &str) -> PathBuf {
+    let venv = std::env::temp_dir().join(format!("pypilot-attr-{tag}"));
+    let _ = std::fs::remove_dir_all(&venv);
+    let site = venv.join("Lib").join("site-packages");
+    let pkg = site.join("mediapipe");
+    std::fs::create_dir_all(pkg.join("tasks")).unwrap();
+    std::fs::write(pkg.join("tasks").join("__init__.py"), "").unwrap();
+    std::fs::write(
+        pkg.join("__init__.py"),
+        "import mediapipe.tasks.python as tasks\n\
+         from mediapipe.tasks.python.vision.core.image import Image\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(site.join("mediapipe-0.10.35.dist-info")).unwrap();
+    venv
+}
+
+fn installed_mediapipe(venv: &std::path::Path) -> Installed {
+    pypilot::core::installed::scan(venv)
+}
+
+#[test]
+fn removed_api_is_caught_before_running_the_file() {
+    let venv = venv_with_mediapipe("removed");
+    let installed = installed_mediapipe(&venv);
+
+    let buffer = "import mediapipe as mp\n\nmp_hands = mp.solutions.hands\n";
+    let findings = check_attributes(buffer, &venv, &installed);
+
+    assert_eq!(findings.len(), 1, "got {findings:?}");
+    match &findings[0].problem {
+        Problem::AttributeMissing {
+            attribute,
+            installed_version,
+            available,
+        } => {
+            assert_eq!(attribute, "solutions");
+            assert_eq!(installed_version.as_deref(), Some("0.10.35"));
+            assert!(
+                available.contains(&"tasks".to_string()),
+                "the message should point at the replacement API: {available:?}"
+            );
+        }
+        other => panic!("expected a missing attribute, got {other:?}"),
+    }
+    // Squiggle lands on the usage, not the import.
+    assert_eq!(findings[0].import.line, 2);
+}
+
+#[test]
+fn attributes_that_exist_are_silent() {
+    let venv = venv_with_mediapipe("present");
+    let installed = installed_mediapipe(&venv);
+
+    // `tasks` is a submodule, `Image` is re-exported in __init__.py.
+    let buffer = "import mediapipe as mp\n\nx = mp.tasks.python\ny = mp.Image\n";
+    assert!(
+        check_attributes(buffer, &venv, &installed).is_empty(),
+        "no false positives on the API that is actually there"
+    );
+}
+
+#[test]
+fn uninstalled_packages_are_not_attribute_checked() {
+    // Nothing on disk to read, so nothing can be claimed.
+    let venv = venv_with_mediapipe("uninstalled");
+    let buffer = "import mediapipe as mp\n\nx = mp.solutions\n";
+    assert!(check_attributes(buffer, &venv, &Installed::default()).is_empty());
 }
