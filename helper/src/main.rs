@@ -32,7 +32,7 @@ fn main() -> ExitCode {
             lsp::run_stdio();
             ExitCode::SUCCESS
         }
-        "doctor" | "setup" | "check" | "fix" | "install" => {
+        "doctor" | "setup" | "check" | "fix" | "install" | "update-data" | "migrate-conda" => {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -78,6 +78,9 @@ fn print_help() {
          \x20   check <package>   Can this package run on this project's Python?\n\
          \x20   install <package> Install one package and record it in the manifest\n\
          \x20   fix python        Rebuild the environment on the right Python version\n\
+         \x20   fix cuda          Re-pin torch/tensorflow to the build matching the driver\n\
+         \x20   update-data       Force-refresh the bundled driver/framework/import tables\n\
+         \x20   migrate-conda     Translate environment.yml into a pyproject.toml\n\
          \x20   lsp               Run as an LSP server over stdio, used by the Zed extension\n\n\
          OPTIONS:\n\
          \x20   --path <dir>   Workspace directory to analyze (default: current dir)\n",

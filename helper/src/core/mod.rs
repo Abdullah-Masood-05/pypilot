@@ -44,6 +44,9 @@ pub enum FixKind {
     SetupEnvironment,
     /// Recreate the venv on a specific Python version.
     RecreateWithPython(PyVersion),
+    /// Translate a conda `environment.yml` into a PEP 621 `pyproject.toml`
+    /// (`pypilot migrate-conda`). Optional per F5 — conda projects work as-is.
+    MigrateConda,
     /// Nothing to automate; the message itself is the guidance.
     Manual,
 }

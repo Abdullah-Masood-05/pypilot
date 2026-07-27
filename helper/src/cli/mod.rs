@@ -7,7 +7,9 @@
 mod check;
 mod doctor;
 mod fix;
+mod migrate_conda;
 mod setup;
+mod update_data;
 
 use std::path::PathBuf;
 
@@ -44,6 +46,9 @@ pub async fn dispatch(mode: &str, args: &[String]) -> crate::Result<()> {
             crate::core::rescan::notify(&workspace, crate::core::rescan::Kind::Setup);
             result
         }
+
+        "update-data" => update_data::run().await,
+        "migrate-conda" => migrate_conda::run(&workspace).await,
 
         other => anyhow::bail!("unknown CLI mode `{other}`"),
     }
