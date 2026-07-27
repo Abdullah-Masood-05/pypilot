@@ -16,6 +16,12 @@ use zed_extension_api::{self as zed, LanguageServerId, Result};
 /// workflow in `.github/workflows/release.yml`.
 const HELPER_REPO: &str = "Abdullah-Masood-05/pypilot";
 
+/// Oldest helper version this shim trusts when it finds one on `$PATH`. A
+/// helper older than this predates whatever the shim currently assumes about
+/// its CLI, so using it silently would surface as a confusing failure deep in
+/// the language server instead of a clear one here.
+const MIN_HELPER_VERSION: (u32, u32, u32) = (0, 1, 0);
+
 struct PyPilotExtension {
     /// Cached path to a working helper binary, to avoid re-probing every launch.
     cached_binary_path: Option<String>,
@@ -29,14 +35,39 @@ impl PyPilotExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<String> {
-        // 1. Respect a user- or system-installed `pypilot` on PATH.
+        // 1. Respect a user- or system-installed `pypilot` on PATH, once its
+        // version checks out. A stale leftover from an old install would
+        // otherwise get used silently and misbehave in ways that look like
+        // an extension bug rather than an outdated helper.
         if let Some(path) = worktree.which("pypilot") {
-            return Ok(path);
+            match check_helper_version(&path) {
+                Ok(version) => {
+                    eprintln!(
+                        "pypilot: using {path} on $PATH (version {}.{}.{})",
+                        version.0, version.1, version.2
+                    );
+                    return Ok(path);
+                }
+                Err(reason) => {
+                    eprintln!(
+                        "pypilot: ignoring {path} on $PATH ({reason}); downloading a managed copy instead"
+                    );
+                    zed::set_language_server_installation_status(
+                        language_server_id,
+                        &zed::LanguageServerInstallationStatus::Failed(format!(
+                            "pypilot on $PATH at {path} was rejected ({reason}); downloading a managed copy instead"
+                        )),
+                    );
+                }
+            }
         }
 
         // 2. Reuse a previously downloaded binary if it still exists on disk.
         if let Some(path) = &self.cached_binary_path {
-            if fs::metadata(path).map(|stat| stat.is_file()).unwrap_or(false) {
+            if fs::metadata(path)
+                .map(|stat| stat.is_file())
+                .unwrap_or(false)
+            {
                 return Ok(path.clone());
             }
         }
@@ -75,7 +106,10 @@ impl PyPilotExtension {
         let version_dir = format!("pypilot-{}", release.version);
         let binary_path = format!("{version_dir}/{}", asset.binary_name());
 
-        if !fs::metadata(&binary_path).map(|s| s.is_file()).unwrap_or(false) {
+        if !fs::metadata(&binary_path)
+            .map(|s| s.is_file())
+            .unwrap_or(false)
+        {
             zed::set_language_server_installation_status(
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
@@ -117,6 +151,52 @@ impl zed::Extension for PyPilotExtension {
     }
 }
 
+/// Run `<path> --version` and check the result against [`MIN_HELPER_VERSION`].
+/// Returns the parsed version on success, or a human-readable reason to
+/// reject the binary.
+fn check_helper_version(path: &str) -> Result<(u32, u32, u32), String> {
+    let output = zed::Command::new(path)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("failed to run `{path} --version`: {e}"))?;
+
+    if output.status != Some(0) {
+        return Err(format!(
+            "`{path} --version` exited with status {:?}",
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = parse_helper_version(stdout.trim())
+        .ok_or_else(|| format!("could not parse a version from `{}`", stdout.trim()))?;
+
+    if version < MIN_HELPER_VERSION {
+        return Err(format!(
+            "version {}.{}.{} is older than the {}.{}.{} this shim requires",
+            version.0,
+            version.1,
+            version.2,
+            MIN_HELPER_VERSION.0,
+            MIN_HELPER_VERSION.1,
+            MIN_HELPER_VERSION.2
+        ));
+    }
+
+    Ok(version)
+}
+
+/// Parses the `pypilot --version` output (`"pypilot X.Y.Z"`) into its numeric
+/// parts.
+fn parse_helper_version(stdout: &str) -> Option<(u32, u32, u32)> {
+    let version = stdout.strip_prefix("pypilot ")?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
 /// Per-platform release asset description. Asset names MUST match the artifacts
 /// produced by `.github/workflows/release.yml`.
 struct AssetSpec {
@@ -128,10 +208,22 @@ struct AssetSpec {
 impl AssetSpec {
     fn for_platform(os: zed::Os, arch: zed::Architecture) -> Result<Self> {
         let spec = match (os, arch) {
-            (zed::Os::Linux, zed::Architecture::X8664) => AssetSpec { slug: "linux-x64", windows: false },
-            (zed::Os::Mac, zed::Architecture::X8664) => AssetSpec { slug: "darwin-x64", windows: false },
-            (zed::Os::Mac, zed::Architecture::Aarch64) => AssetSpec { slug: "darwin-arm64", windows: false },
-            (zed::Os::Windows, zed::Architecture::X8664) => AssetSpec { slug: "windows-x64", windows: true },
+            (zed::Os::Linux, zed::Architecture::X8664) => AssetSpec {
+                slug: "linux-x64",
+                windows: false,
+            },
+            (zed::Os::Mac, zed::Architecture::X8664) => AssetSpec {
+                slug: "darwin-x64",
+                windows: false,
+            },
+            (zed::Os::Mac, zed::Architecture::Aarch64) => AssetSpec {
+                slug: "darwin-arm64",
+                windows: false,
+            },
+            (zed::Os::Windows, zed::Architecture::X8664) => AssetSpec {
+                slug: "windows-x64",
+                windows: true,
+            },
             (os, arch) => {
                 return Err(format!(
                     "unsupported platform for PyPilot helper: {os:?}/{arch:?}"
@@ -181,3 +273,27 @@ fn prune_old_versions(keep_dir: &str) {
 }
 
 zed::register_extension!(PyPilotExtension);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_helpers_own_version_output() {
+        assert_eq!(parse_helper_version("pypilot 0.1.0"), Some((0, 1, 0)));
+        assert_eq!(parse_helper_version("pypilot 1.12.3"), Some((1, 12, 3)));
+    }
+
+    #[test]
+    fn rejects_output_that_is_not_a_version() {
+        assert_eq!(parse_helper_version(""), None);
+        assert_eq!(parse_helper_version("pypilot"), None);
+        assert_eq!(parse_helper_version("not pypilot at all"), None);
+    }
+
+    #[test]
+    fn min_helper_version_orders_as_expected() {
+        assert!((0, 0, 9) < MIN_HELPER_VERSION);
+        assert!(MIN_HELPER_VERSION <= (0, 1, 0));
+    }
+}
