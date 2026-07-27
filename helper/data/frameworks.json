@@ -1,28 +1,40 @@
 {
-  "_comment": "Framework release -> supported Python range, CUDA builds, wheel index URLs. Seed snapshot; F2 expands and the refresh job overlays newer copies.",
-  "schema_version": 1,
-  "frameworks": {
-    "torch": {
-      "index_urls": {
-        "cpu": "https://download.pytorch.org/whl/cpu",
-        "cu118": "https://download.pytorch.org/whl/cu118",
-        "cu121": "https://download.pytorch.org/whl/cu121",
-        "cu124": "https://download.pytorch.org/whl/cu124"
-      },
-      "releases": [
-        { "version": "2.2.0", "python": ">=3.8,<3.12", "cuda_builds": ["cpu", "cu118", "cu121"] },
-        { "version": "2.3.0", "python": ">=3.8,<3.13", "cuda_builds": ["cpu", "cu118", "cu121"] },
-        { "version": "2.4.0", "python": ">=3.8,<3.13", "cuda_builds": ["cpu", "cu118", "cu121", "cu124"] }
-      ]
-    },
-    "tensorflow": {
-      "index_urls": {
-        "default": "https://pypi.org/simple"
-      },
-      "releases": [
-        { "version": "2.15.0", "python": ">=3.9,<3.12", "cuda_builds": ["bundled"] },
-        { "version": "2.16.1", "python": ">=3.9,<3.13", "cuda_builds": ["bundled"] }
-      ]
-    }
+  "_comment": "Only what F3 cannot already derive from PyPI: which CUDA build variants a torch release ships (and their index URL), and the minimum CUDA runtime a tensorflow release needs. Python-version support per release is NOT duplicated here -- it comes from the same PyPI wheel-tag analysis F3 already does, resolving 'torch' or 'tensorflow' as an ordinary pinned dependency. Real data from pytorch.org/get-started/previous-versions and tensorflow.org/install/source#gpu; the refresh job (F7) keeps this current between releases of PyPilot itself.",
+  "schema_version": 2,
+  "torch": {
+    "pypi_name": "torch",
+    "cpu_index_url": "https://download.pytorch.org/whl/cpu",
+    "cuda_index_url_pattern": "https://download.pytorch.org/whl/{tag}",
+    "releases": [
+      { "version": "2.4.0", "cuda_builds": ["cu118", "cu121", "cu124"] },
+      { "version": "2.4.1", "cuda_builds": ["cu118", "cu121", "cu124"] },
+      { "version": "2.5.0", "cuda_builds": ["cu118", "cu121", "cu124"] },
+      { "version": "2.5.1", "cuda_builds": ["cu118", "cu121", "cu124"] },
+      { "version": "2.6.0", "cuda_builds": ["cu118", "cu124", "cu126"] },
+      { "version": "2.7.0", "cuda_builds": ["cu118", "cu126", "cu128"] },
+      { "version": "2.7.1", "cuda_builds": ["cu118", "cu126", "cu128"] },
+      { "version": "2.8.0", "cuda_builds": ["cu126", "cu128", "cu129"] },
+      { "version": "2.9.0", "cuda_builds": ["cu126", "cu128", "cu130"] },
+      { "version": "2.9.1", "cuda_builds": ["cu126", "cu128", "cu130"] },
+      { "version": "2.10.0", "cuda_builds": ["cu126", "cu128", "cu130"] },
+      { "version": "2.11.0", "cuda_builds": ["cu126", "cu128", "cu130"] },
+      { "version": "2.12.0", "cuda_builds": ["cu126", "cu130", "cu132"] },
+      { "version": "2.12.1", "cuda_builds": ["cu126", "cu130", "cu132"] }
+    ]
+  },
+  "tensorflow": {
+    "pypi_name": "tensorflow",
+    "releases": [
+      { "version": "2.12.0", "min_cuda": "11.8" },
+      { "version": "2.13.0", "min_cuda": "11.8" },
+      { "version": "2.14.0", "min_cuda": "11.8" },
+      { "version": "2.15.0", "min_cuda": "12.2" },
+      { "version": "2.16.1", "min_cuda": "12.3" },
+      { "version": "2.17.0", "min_cuda": "12.3" },
+      { "version": "2.18.0", "min_cuda": "12.5" },
+      { "version": "2.19.0", "min_cuda": "12.5" },
+      { "version": "2.20.0", "min_cuda": "12.5" },
+      { "version": "2.21.0", "min_cuda": "12.5" }
+    ]
   }
 }
