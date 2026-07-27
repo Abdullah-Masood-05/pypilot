@@ -5,7 +5,7 @@
 //! keystroke pause would blow the latency budget. It also works when the venv
 //! has no pip in it, which is the normal case for environments uv creates.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::core::project::normalize_name;
@@ -14,6 +14,8 @@ use crate::core::project::normalize_name;
 #[derive(Debug, Clone, Default)]
 pub struct Installed {
     pub packages: BTreeSet<String>,
+    /// Installed version per package, when the metadata directory records one.
+    pub versions: BTreeMap<String, String>,
 }
 
 impl Installed {
@@ -25,6 +27,11 @@ impl Installed {
     pub fn count(&self) -> usize {
         self.packages.len()
     }
+
+    /// The installed version of a distribution, if known.
+    pub fn version_of(&self, name: &str) -> Option<String> {
+        self.versions.get(&normalize_name(name)).cloned()
+    }
 }
 
 /// Read the installed distributions from a venv directory.
@@ -33,6 +40,7 @@ impl Installed {
 /// treat the same as "nothing installed".
 pub fn scan(venv: &Path) -> Installed {
     let mut packages = BTreeSet::new();
+    let mut versions = BTreeMap::new();
     for dir in site_packages_dirs(venv) {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -41,11 +49,26 @@ pub fn scan(venv: &Path) -> Installed {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if let Some(dist) = distribution_name(&name) {
+                if let Some(v) = distribution_version(&name) {
+                    versions.insert(dist.clone(), v);
+                }
                 packages.insert(dist);
             }
         }
     }
-    Installed { packages }
+    Installed { packages, versions }
+}
+
+/// The version out of a `.dist-info` directory name, if it has one.
+fn distribution_version(entry: &str) -> Option<String> {
+    let stem = entry
+        .strip_suffix(".dist-info")
+        .or_else(|| entry.strip_suffix(".egg-info"))?;
+    let (_, version) = stem.split_once('-')?;
+    if version.is_empty() {
+        return None;
+    }
+    Some(version.to_string())
 }
 
 /// Candidate `site-packages` locations for a venv, across platforms.
@@ -53,7 +76,7 @@ pub fn scan(venv: &Path) -> Installed {
 /// Windows uses `Lib/site-packages`; POSIX nests under a version directory that
 /// we discover rather than guess, since the venv's Python version is exactly
 /// what F4 may be about to change.
-fn site_packages_dirs(venv: &Path) -> Vec<PathBuf> {
+pub fn site_packages_dirs(venv: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     let windows = venv.join("Lib").join("site-packages");
@@ -119,6 +142,7 @@ mod tests {
     fn lookup_normalizes_the_query() {
         let installed = Installed {
             packages: ["opencv-python".to_string()].into_iter().collect(),
+            ..Default::default()
         };
         assert!(installed.contains("opencv_python"));
         assert!(installed.contains("OpenCV-Python"));
