@@ -41,7 +41,7 @@ pub async fn install_package(
 
     // Unpinned here — this path installs whatever "the package" resolves to
     // right now, so F2 solves against the newest curated release.
-    let hardware = matrix::solve::solve_framework(package, None).await;
+    let hardware = matrix::solve::solve_framework(package, None, settings).await;
     if let Some(solved) = &hardware {
         if let Some(finding) = &solved.finding {
             push(&mut summary, "GPU/CUDA check", true, &finding.detail);

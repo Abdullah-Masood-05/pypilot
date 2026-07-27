@@ -40,7 +40,7 @@ async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
 
     let mut any_failed = false;
     for req in frameworks {
-        let Some(solved) = solve_framework(&req.name, Some(req)).await else {
+        let Some(solved) = solve_framework(&req.name, Some(req), settings).await else {
             continue;
         };
         if let Some(finding) = &solved.finding {
