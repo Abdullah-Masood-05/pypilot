@@ -12,7 +12,9 @@ use crate::core::project::Requirement;
 use crate::core::{Finding, FixKind, Severity};
 use crate::matrix::frameworks::{CudaBuild, Framework, FrameworkTable, ReleaseInfo};
 use crate::matrix::nvidia::{CudaVersion, DriverSupport, DriverTable};
+use crate::matrix::refresh;
 use crate::pypi::version::VersionSpec;
+use crate::settings::Settings;
 
 /// What solving one framework dependency produced.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -32,13 +34,21 @@ pub struct FrameworkSolve {
 
 /// Solve for `package_name`, given its declared requirement (`None` when
 /// unpinned). Probes the GPU itself, so this is the one entry point both
-/// [`crate::matrix::check`] and the install path call.
+/// [`crate::matrix::check`] and the install path call. Reads the framework and
+/// driver tables through [`refresh::read`], so a background-refreshed copy is
+/// used automatically once one exists, per F7's `data_refresh_days`.
 pub async fn solve_framework(
     package_name: &str,
     requirement: Option<&Requirement>,
+    settings: &Settings,
 ) -> Option<FrameworkSolve> {
     let framework = Framework::from_package_name(package_name)?;
-    let table = FrameworkTable::load(crate::matrix::FRAMEWORKS_JSON)?;
+    let frameworks_json = refresh::read(
+        "frameworks.json",
+        crate::matrix::FRAMEWORKS_JSON,
+        settings.data_refresh_days,
+    );
+    let table = FrameworkTable::load(&frameworks_json)?;
     let accelerator = gpu::detect().await;
 
     let version = resolve_version(&table, framework, requirement)?;
@@ -53,7 +63,12 @@ pub async fn solve_framework(
             name,
             driver_version,
         } => {
-            let driver_table = DriverTable::load(crate::matrix::NVIDIA_JSON);
+            let nvidia_json = refresh::read(
+                "nvidia.json",
+                crate::matrix::NVIDIA_JSON,
+                settings.data_refresh_days,
+            );
+            let driver_table = DriverTable::load(&nvidia_json);
             let os = Platform::current().os;
             let support = driver_table.and_then(|t| t.support_for(&driver_version, os));
             with_nvidia(release, &name, &driver_version, support)
@@ -457,14 +472,18 @@ mod tests {
 
     #[tokio::test]
     async fn non_framework_package_is_not_handled() {
-        assert!(solve_framework("numpy", None).await.is_none());
+        assert!(solve_framework("numpy", None, &Settings::default())
+            .await
+            .is_none());
     }
 
     #[tokio::test]
     async fn resolved_version_is_set_on_the_returned_solve() {
         // Whatever the machine's actual accelerator is, an unpinned torch
         // request must resolve to the table's newest curated release.
-        let solved = solve_framework("torch", None).await.unwrap();
+        let solved = solve_framework("torch", None, &Settings::default())
+            .await
+            .unwrap();
         let table = table();
         assert_eq!(
             solved.resolved_version.as_deref(),

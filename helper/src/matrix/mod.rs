@@ -15,11 +15,13 @@
 //!
 //! The bundled datasets (`data/nvidia.json`, `data/frameworks.json`,
 //! `data/import_map.json`) are embedded at compile time so an offline machine
-//! always has a correct snapshot; the runtime refresh (7-day TTL per F7) will
-//! overlay newer copies fetched from the project repo.
+//! always has a correct snapshot; [`refresh`] overlays newer copies fetched
+//! from the project repo, TTL-gated by F7's `data_refresh_days`, and falls
+//! back to the bundled snapshot silently on any failure.
 
 pub mod frameworks;
 pub mod nvidia;
+pub mod refresh;
 pub mod solve;
 
 use std::collections::HashMap;
@@ -33,6 +35,10 @@ use crate::core::project::Requirement;
 use crate::core::Finding;
 use crate::settings::Settings;
 use frameworks::Framework;
+
+/// F7's documented default TTL, used where a caller has no `Settings` in
+/// scope to read the user's configured value from (see [`import_map`]).
+const DEFAULT_TTL_DAYS: u32 = 7;
 
 /// Bundled snapshots, embedded so they ship inside the binary.
 pub const NVIDIA_JSON: &str = include_str!("../../data/nvidia.json");
@@ -55,15 +61,16 @@ pub struct HardwareReport {
 }
 
 /// Run the hardware/ML compatibility check over a project's declared
-/// dependencies. Read-only: probes the GPU and reads bundled data, touches
-/// nothing on disk besides the GPU probe's own cache.
+/// dependencies. Read-only from the caller's point of view: the GPU probe has
+/// its own disk cache, and any data refresh happens in the background without
+/// this call waiting on it.
 ///
 /// Silent by construction for everything except torch/tensorflow: packages
 /// this module does not recognize simply produce no findings, matching the
 /// "stay silent" contract rather than emitting a Info-per-package no-op.
 pub async fn check(
     _workspace: &Path,
-    _settings: &Settings,
+    settings: &Settings,
     packages: &[Requirement],
 ) -> HardwareReport {
     let relevant: Vec<&Requirement> = packages
@@ -74,6 +81,11 @@ pub async fn check(
     if relevant.is_empty() {
         return HardwareReport::default();
     }
+
+    // Best-effort, non-blocking: refreshes the on-disk cache for the *next*
+    // scan without making this one wait on a network round trip. A stale
+    // cache always falls back to the bundled snapshot, never to an error.
+    tokio::spawn(refresh::refresh_if_stale(settings.clone()));
 
     let accelerator = gpu::detect().await;
     let gpu_info = Some(match &accelerator {
@@ -94,7 +106,7 @@ pub async fn check(
 
     let mut findings = Vec::new();
     for req in relevant {
-        if let Some(solved) = solve::solve_framework(&req.name, Some(req)).await {
+        if let Some(solved) = solve::solve_framework(&req.name, Some(req), settings).await {
             findings.extend(solved.finding);
         }
     }
@@ -105,42 +117,22 @@ pub async fn check(
     }
 }
 
-/// Loader for the bundled datasets, with room for the F7 refresh overlay.
-///
-/// Today it exposes the embedded snapshots verbatim; the refresh path is stubbed
-/// to keep the surface stable for F2/F3-data work.
-pub struct DataStore {
-    pub nvidia: &'static str,
-    pub frameworks: &'static str,
-    pub import_map: &'static str,
-}
-
-impl DataStore {
-    pub fn bundled() -> DataStore {
-        DataStore {
-            nvidia: NVIDIA_JSON,
-            frameworks: FRAMEWORKS_JSON,
-            import_map: IMPORT_MAP_JSON,
-        }
-    }
-
-    /// Placeholder for the 7-day-TTL refresh from the project repo (F7).
-    /// Returns the bundled snapshot until implemented.
-    pub async fn load_or_refresh(_settings: &Settings) -> DataStore {
-        DataStore::bundled()
-    }
-}
-
 #[derive(Deserialize)]
 struct ImportMapFile {
     map: HashMap<String, String>,
 }
 
 /// Import name to PyPI package name, parsed once on first use.
+///
+/// Cached for the process lifetime, which is fine for a short-lived CLI
+/// invocation or a single LSP session: the disk-cache check inside
+/// [`refresh::read`] already picks up whatever the last background refresh
+/// wrote, so a freshly started process always sees the newest cached data.
 fn import_map() -> &'static HashMap<String, String> {
     static MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
     MAP.get_or_init(|| {
-        serde_json::from_str::<ImportMapFile>(IMPORT_MAP_JSON)
+        let json = refresh::read("import_map.json", IMPORT_MAP_JSON, DEFAULT_TTL_DAYS);
+        serde_json::from_str::<ImportMapFile>(&json)
             .map(|f| f.map)
             .unwrap_or_default()
     })
