@@ -54,7 +54,7 @@ pub async fn assess<S: MetadataSource>(
     };
 
     // F2 seam (empty in Phase 1).
-    let hardware = matrix::check(workspace, settings, &project.names()).await;
+    let hardware = matrix::check(workspace, settings, &project.packages).await;
 
     let env = EnvSummary::from_probes(&probes);
     let (target_python, mut findings) = synthesize(&env, &project, compat.as_ref());
