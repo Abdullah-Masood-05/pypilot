@@ -160,8 +160,8 @@ The template has the details.
 cargo test  -p pypilot-helper
 cargo build -p pypilot-helper --release
 
-rustup target add wasm32-unknown-unknown
-cargo build -p pypilot-zed --target wasm32-unknown-unknown --release
+rustup target add wasm32-wasip2
+cargo build -p pypilot-zed --target wasm32-wasip2 --release
 ```
 
 The tests never touch the network. PyPI responses are recorded JSON fixtures,

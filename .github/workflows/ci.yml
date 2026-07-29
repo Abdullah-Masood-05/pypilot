@@ -57,7 +57,7 @@ jobs:
       - name: Install Rust (wasm)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - name: Build extension (wasm)
-        run: cargo build -p pypilot-zed --target wasm32-unknown-unknown --release
+        run: cargo build -p pypilot-zed --target wasm32-wasip2 --release
