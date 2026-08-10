@@ -15,7 +15,8 @@ languages = ["Python"]
 
 # --- Capabilities -----------------------------------------------------------
 # The shim must download the platform-matching helper release asset from GitHub
-# and then execute it. Both actions are sandboxed and must be declared.
+# before handing it to Zed, which launches it as the language server. Only the
+# download is performed by the WASM shim and needs to be declared.
 
 # Fetch helper binaries (and, transitively, nothing else) from GitHub releases.
 [[capabilities]]
@@ -30,10 +31,3 @@ kind = "download_file"
 host = "objects.githubusercontent.com"
 path = ["**"]
 
-# Execute the downloaded helper. The resolved command is an absolute path to
-# the extracted `pypilot` binary, so we permit any command path here; the
-# binary itself is the one we just downloaded and verified.
-[[capabilities]]
-kind = "process:exec"
-command = "*"
-args = ["**"]
