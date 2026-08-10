@@ -1,4 +1,4 @@
-id = "pypilot"
+id = "python-env-doctor"
 name = "PyPilot"
 version = "0.1.1"
 schema_version = 1
