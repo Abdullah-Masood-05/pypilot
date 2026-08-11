@@ -1,4 +1,4 @@
-id = "python-env-doctor"
+id = "python-env-language-server"
 name = "PyPilot"
 version = "0.1.1"
 schema_version = 1
