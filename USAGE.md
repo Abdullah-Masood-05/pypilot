@@ -1,0 +1,172 @@
+# Using PyPilot
+
+This walks through what actually happens, scenario by scenario, from the
+moment you open a Python project in Zed with PyPilot installed. Everything
+here maps to real code paths (`helper/src/core/solver.rs`, `helper/src/lsp/`,
+`helper/src/matrix/`), not aspirational behavior.
+
+## What triggers a scan
+
+Opening a workspace that contains Python files starts the `pypilot lsp`
+language server. If `auto_check_on_open = true` (the default), it runs a
+full assessment once: probe the environment (venv, uv, installed
+interpreters), parse the project's dependency files, fetch PyPI metadata for
+each dependency, and compute which Python versions the whole set supports.
+
+The same assessment also runs whenever you trigger it manually, from a Zed
+task (see Commands below) or by editing a dependency file and saving it.
+
+## Walkthrough: cloning a repo with `requirements.txt`
+
+Say the repo has `requirements.txt` with `mediapipe`, `numpy`, and no
+`.venv` yet.
+
+1. PyPilot reads `requirements.txt`, including any version pins
+   (`mediapipe==0.10.14` is judged on that release, not the newest one).
+2. For each package it fetches wheel tags and `requires_python` from PyPI,
+   then intersects the supported Python versions across all of them.
+3. If the intersection is non-empty, it picks the newest version in range
+   and shows a notification: **"No environment set up yet"**, with the
+   reason (e.g. "Dependencies support Python 3.9-3.12. Recommended: 3.12
+   (upper bound set by mediapipe, which supports 3.9-3.12)"), and a **"Fix
+   everything"** button.
+4. Clicking it runs the same logic as `pypilot setup`: install the target
+   Python if missing (uv mode only), create the venv, install the
+   dependencies. Pip mode never installs a missing interpreter; it tells you
+   which one you need instead.
+
+If the intersection is empty, two dependencies want incompatible Python
+ranges. PyPilot shows an **error**, names both packages and their supported
+ranges, and does not offer an auto-fix button, since there's no single
+version to recreate the environment on. You have to resolve the conflict
+yourself (pin one package differently, drop one, etc.).
+
+## Every finding PyPilot can surface
+
+| Situation | Severity | What you see | Auto-fix? |
+|---|---|---|---|
+| No venv yet, versions agree | Warning | "No environment set up yet" + recommended version | Yes — "Fix everything" |
+| Venv exists, wrong Python | Error | "Python X.Y is not supported by this project" + which package(s) block it | Yes — "Recreate with Python X.Y" |
+| Venv exists, right Python | — | Nothing. Silent on purpose. | — |
+| Dependencies conflict (empty intersection) | Error | Both blocking packages named, each one's supported range | No — manual |
+| A dependency name doesn't resolve on PyPI | Warning | "Could not resolve `name`" (typo or private package) | No — manual |
+| A dependency has no wheels, will compile from source | Warning | Which package, that it'll build from an sdist | No — manual |
+| `environment.yml` found (conda project) | Info | Points at `pypilot migrate-conda` | Command, not a button |
+| `uv --dry-run` disagrees with the metadata verdict | Warning | Names the real resolver conflict metadata alone can't see (yanked release, transitive pin) | No — manual |
+| GPU present, torch/tensorflow declared | Info | Which CUDA build was picked for your driver | Applied automatically on install |
+| No GPU | — | Silent; installs the plain CPU build | — |
+| Apple Silicon, torch/tensorflow declared | Info | Note that you get the MPS backend, not CUDA | — |
+
+## Two separate systems: onboarding scan vs. live diagnostics
+
+The scan above (F5) runs once per relevant event and shows a **notification**
+in Zed's toast/message area. It's about the environment as a whole: which
+Python, is the venv right, do the pins conflict.
+
+Separately, while you're actually editing a file, PyPilot runs live
+diagnostics (F4) on your imports:
+
+- Type `import mediapipe` in a project whose venv is on an unsupported
+  Python version, and the import gets a squiggle. `ctrl-.` (code actions)
+  offers to recreate the environment on the version that supports it.
+- If the package is already installed, PyPilot also checks it structurally:
+  it reads what the installed package on disk actually exports. Type
+  `mp.solutions` where `solutions` was removed in the installed release
+  (this is real: mediapipe 0.10.35 dropped it), and you get a squiggle
+  naming the missing attribute and what the package does provide, before you
+  ever run the file. This only fires when PyPilot can be sure the attribute
+  is genuinely absent — if the module uses dynamic attribute resolution
+  (`__getattr__`), it stays quiet rather than guessing.
+
+Live diagnostics don't wait for a manual scan or a saved file; they update
+as you type, the same as any other LSP diagnostic.
+
+## If you miss the notification (or dismiss it)
+
+Nothing is lost. The assessment isn't a one-shot popup, it's re-derivable
+any time:
+
+- Run **`pypilot: show details (doctor report)`** from `task: spawn` for a
+  full read-only report — same information the toast would have shown,
+  without needing the toast to still be on screen.
+- Run **`pypilot: fix everything (set up environment)`** to apply whatever
+  the current assessment recommends, whether or not you saw the original
+  notification.
+- The diagnostics/squiggles on your buffers aren't a notification at all;
+  they persist in the Problems panel and on the line itself until the
+  underlying issue is fixed, so there's nothing to "miss" there.
+
+## Notification volume: `notifications` setting
+
+- `"problems-only"` (default): a toast for warnings and errors only. A
+  correctly-configured project stays silent.
+- `"all"`: also raises informational findings, like which CUDA build got
+  picked, or that a conda project was detected.
+- `"off"`: no toasts at all. Diagnostics and code actions on your buffers
+  still work; only the notification is suppressed.
+
+## GPU / CUDA scenario in detail
+
+If the project declares `torch` or `tensorflow` and PyPilot detects an
+NVIDIA GPU (`nvidia-smi`), it reads the driver version, maps it to the
+newest CUDA runtime that driver supports, and picks the matching build
+(`cu121`, `cu124`, etc.) so the install pulls the right wheel instead of
+whatever the default index would hand back. This applies automatically on
+`pypilot setup` / `pypilot install` / the "Fix everything" button; you don't
+choose the build yourself. If your driver is too old for any build the
+declared framework version ships, that's surfaced as a finding naming the
+gap. Apple Silicon gets a note that you're on the MPS backend, not CUDA. No
+GPU at all means the plain CPU wheel, silently, no finding raised.
+
+## Conda scenario in detail
+
+If the workspace has `environment.yml` and no `pyproject.toml`, PyPilot
+doesn't try to manage conda directly (translating conda package names to
+PyPI ones isn't reliable enough to automate). It raises an Info-level
+finding pointing at `pypilot migrate-conda`, which generates a
+`pyproject.toml` from the conda file's dependencies (version pins
+preserved, including conda's `=` prefix-match semantics converted to
+`==X.Y.*`). It never deletes `environment.yml` and never overwrites an
+existing `pyproject.toml`. Review the generated file before running
+`pypilot setup` on it: conda package names don't always match their PyPI
+name, and some have no PyPI equivalent at all.
+
+## Commands (via Zed tasks, `task: spawn`)
+
+Zed doesn't let extensions add command palette entries, so every action
+ships as a task. Copy `tasks/pypilot.json` into `.zed/tasks.json` or your
+global Zed `tasks.json` first.
+
+| Task | Does |
+|---|---|
+| `pypilot: fix everything (set up environment)` | Build/rebuild the environment on the recommended Python |
+| `pypilot: show details (doctor report)` | Read-only report, changes nothing |
+| `pypilot: fix python version` | Rebuild the environment on the right version specifically |
+| `pypilot: fix cuda (re-pin torch/tensorflow to the driver)` | Reinstall those two packages against the matched CUDA build |
+| `pypilot: update data (refresh bundled tables)` | Force-refresh driver/framework/import tables from this repo |
+| `pypilot: migrate conda to pyproject.toml` | One-shot conda → pyproject.toml translation |
+
+The toast's "Fix everything" button and the task of the same name call the
+identical function, so they can't drift apart.
+
+## Settings
+
+`.zed/pypilot.toml` or `pypilot.toml` in the project root, or the global
+config directory for defaults across all projects:
+
+```toml
+package_manager    = "uv"             # "uv" or "pip"
+notifications      = "problems-only"  # "all", "problems-only", or "off"
+auto_check_on_open = true
+data_refresh_days  = 7                # 0 stays fully offline
+```
+
+`package_manager = "pip"` runs the identical compatibility checks; the only
+difference is pip can't fetch a missing interpreter for you, so PyPilot
+tells you which Python you need instead of installing it.
+
+`data_refresh_days` controls how often the bundled driver/framework/import
+tables refresh from this repo in the background. They ship inside the
+binary, so an offline machine is never wrong, only potentially stale. `0`
+disables the network check entirely; `pypilot update-data` forces a refresh
+on demand regardless of the TTL.

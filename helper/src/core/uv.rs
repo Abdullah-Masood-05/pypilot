@@ -177,6 +177,69 @@ pub async fn sync(uv: &UvInfo, cwd: &Path) -> crate::Result<Output> {
     command::run(&uv.path, &["sync"], Some(cwd)).await
 }
 
+/// `uv init` — scaffold a new pyproject.toml in the current directory.
+///
+/// Only called when no `pyproject.toml` exists yet (fresh project or a project
+/// that was previously requirements.txt-only). `uv init` creates a minimal PEP
+/// 621 pyproject.toml, which lets subsequent `uv add` calls record dependencies
+/// properly rather than operating in a stateless mode.
+///
+/// The `--no-workspace` flag prevents uv from trying to attach this project to
+/// a parent workspace that may be present further up the directory tree, which
+/// would be surprising and unwanted here.
+pub async fn init(uv: &UvInfo, cwd: &Path) -> crate::Result<Output> {
+    command::run(&uv.path, &["init", "--no-workspace"], Some(cwd)).await
+}
+
+/// `uv add <pkgs...>` and migrate any existing `requirements.txt` entries.
+///
+/// When a `requirements.txt` exists alongside the newly-created `pyproject.toml`,
+/// we read its package names and pass them all to a single `uv add` invocation
+/// so they land in `[project.dependencies]` before the caller's `package` is
+/// added. This avoids leaving a stale `requirements.txt` that pip-based tools
+/// would re-read incorrectly.
+///
+/// If there is no `requirements.txt`, this is a pure delegation to [`add`].
+pub async fn add_with_requirements_migration(
+    uv: &UvInfo,
+    packages: &[String],
+    index_url: Option<&str>,
+    cwd: &Path,
+) -> crate::Result<Output> {
+    let req_path = cwd.join("requirements.txt");
+    if req_path.is_file() {
+        // Best-effort migration: read current requirements.txt entries.
+        let existing_pkgs: Vec<String> = std::fs::read_to_string(&req_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with('#') && !t.starts_with('-')
+            })
+            .map(|l| l.to_string())
+            .collect();
+
+        let mut all_pkgs = existing_pkgs;
+        for p in packages {
+            if !all_pkgs.iter().any(|e| {
+                crate::core::project::requirement_name(e).as_deref()
+                    == crate::core::project::requirement_name(p).as_deref()
+            }) {
+                all_pkgs.push(p.clone());
+            }
+        }
+
+        let out = add(uv, &all_pkgs, index_url, cwd).await?;
+        // Remove the requirements.txt now that pyproject.toml tracks deps.
+        if out.success() {
+            let _ = std::fs::remove_file(&req_path);
+        }
+        return Ok(out);
+    }
+
+    add(uv, packages, index_url, cwd).await
+}
+
 /// `uv add <pkgs...>` — records the dependency in pyproject.toml and installs it.
 /// Preferred over `uv pip install` for pyproject projects because uv edits the
 /// manifest itself, preserving formatting and comments.

@@ -69,3 +69,26 @@ pub async fn install_packages(
 pub fn select_interpreter(interpreters: &[Interpreter], target: PyVersion) -> Option<&Interpreter> {
     interpreter::find_version(interpreters, target)
 }
+
+/// `pip freeze > requirements.txt` — snapshot the full, pinned venv state.
+///
+/// Called after every successful `pip install` so `requirements.txt` always
+/// reflects the exact installed versions (e.g. `numpy==1.26.4` rather than
+/// the bare name that was requested). The entire file is replaced because the
+/// freeze output is already the authoritative list of everything in the venv.
+///
+/// Never fails silently: callers record this as a step in [`SetupSummary`] so
+/// the user sees if the file write failed.
+pub async fn freeze_requirements(
+    venv: &Path,
+    workspace: &Path,
+) -> crate::Result<crate::core::command::Output> {
+    let py = venv_python(venv);
+    let out = command::run(&py, &["-m", "pip", "freeze"], Some(workspace)).await?;
+    if out.success() {
+        let req_path = workspace.join("requirements.txt");
+        std::fs::write(&req_path, &out.stdout)
+            .map_err(|e| anyhow::anyhow!("writing requirements.txt: {e}"))?;
+    }
+    Ok(out)
+}

@@ -37,7 +37,6 @@ pub async fn install_package(
     };
 
     let pkgs = vec![package.to_string()];
-    let has_pyproject = workspace.join("pyproject.toml").is_file();
 
     // Unpinned here — this path installs whatever "the package" resolves to
     // right now, so F2 solves against the newest curated release.
@@ -59,54 +58,64 @@ pub async fn install_package(
                 }
             };
 
-            // `uv add` writes pyproject itself; otherwise install then record.
-            if has_pyproject {
-                match uv::add(&uv_info, &pkgs, index_url, workspace).await {
+            // Ensure a pyproject.toml exists so `uv add` has somewhere to
+            // record the dependency. `uv init --no-workspace` is idempotent-ish:
+            // if pyproject.toml is already present it exits without touching it.
+            let has_pyproject = workspace.join("pyproject.toml").is_file();
+            if !has_pyproject {
+                match uv::init(&uv_info, workspace).await {
                     Ok(out) if out.success() => {
+                        push(&mut summary, "uv init", true, "pyproject.toml created");
+                    }
+                    Ok(out) => {
+                        // Non-fatal: may already exist or be a git-tracked dir.
                         push(
                             &mut summary,
-                            &format!("uv add {package}"),
+                            "uv init",
                             true,
-                            "installed and added to pyproject.toml",
+                            &format!("(warning) {}", out.stderr.trim()),
                         );
                     }
-                    Ok(out) => push(
-                        &mut summary,
-                        &format!("uv add {package}"),
-                        false,
-                        out.stderr.trim(),
-                    ),
-                    Err(e) => push(
-                        &mut summary,
-                        &format!("uv add {package}"),
-                        false,
-                        &e.to_string(),
-                    ),
+                    Err(e) => {
+                        push(&mut summary, "uv init", false, &e.to_string());
+                        return Ok(summary);
+                    }
                 }
+            }
+
+            // `uv add` records the dep in pyproject.toml AND installs it, so
+            // this is always the right call — whether pyproject existed before
+            // or was just created by `uv init`. If a requirements.txt exists
+            // alongside, use the migration helper which pulls existing entries
+            // into the new pyproject before adding the requested package.
+            let pyproject_was_new = !has_pyproject;
+            let result = if pyproject_was_new {
+                uv::add_with_requirements_migration(&uv_info, &pkgs, index_url, workspace).await
             } else {
-                match uv::pip_install(&uv_info, &pkgs, index_url, workspace).await {
-                    Ok(out) if out.success() => {
-                        push(
-                            &mut summary,
-                            &format!("uv pip install {package}"),
-                            true,
-                            "installed",
-                        );
-                        record_in_requirements(workspace, package, &mut summary);
-                    }
-                    Ok(out) => push(
+                uv::add(&uv_info, &pkgs, index_url, workspace).await
+            };
+
+            match result {
+                Ok(out) if out.success() => {
+                    push(
                         &mut summary,
-                        &format!("uv pip install {package}"),
-                        false,
-                        out.stderr.trim(),
-                    ),
-                    Err(e) => push(
-                        &mut summary,
-                        &format!("uv pip install {package}"),
-                        false,
-                        &e.to_string(),
-                    ),
+                        &format!("uv add {package}"),
+                        true,
+                        "installed and recorded in pyproject.toml",
+                    );
                 }
+                Ok(out) => push(
+                    &mut summary,
+                    &format!("uv add {package}"),
+                    false,
+                    out.stderr.trim(),
+                ),
+                Err(e) => push(
+                    &mut summary,
+                    &format!("uv add {package}"),
+                    false,
+                    &e.to_string(),
+                ),
             }
         }
         PackageManager::Pip => {
@@ -128,7 +137,9 @@ pub async fn install_package(
                         true,
                         "installed",
                     );
-                    record_in_requirements(workspace, package, &mut summary);
+                    // Freeze the full venv state into requirements.txt so the
+                    // file tracks exact pinned versions rather than bare names.
+                    freeze_into_requirements(&venv, workspace, &mut summary).await;
                 }
                 Ok(out) => push(
                     &mut summary,
@@ -293,12 +304,17 @@ pub async fn recreate_with_python(
             let requirements = workspace.join("requirements.txt");
             if requirements.is_file() {
                 match pip::install_requirements(&venv_path, &requirements, workspace).await {
-                    Ok(out) if out.success() => push(
-                        &mut summary,
-                        "reinstall requirements.txt",
-                        true,
-                        "existing dependencies restored",
-                    ),
+                    Ok(out) if out.success() => {
+                        push(
+                            &mut summary,
+                            "reinstall requirements.txt",
+                            true,
+                            "existing dependencies restored",
+                        );
+                        // Freeze immediately so the file tracks the exact
+                        // versions installed into the new venv.
+                        freeze_into_requirements(&venv_path, workspace, &mut summary).await;
+                    }
                     Ok(out) => push(
                         &mut summary,
                         "reinstall requirements.txt",
@@ -328,6 +344,11 @@ pub async fn recreate_with_python(
 
 /// Append a package to requirements.txt, creating it if needed, skipping it if
 /// the name is already listed.
+///
+/// Retained for reference and potential future use (e.g. uv-less fallbacks).
+/// The live install paths now use [`freeze_into_requirements`] instead, which
+/// produces a fully-pinned snapshot from `pip freeze`.
+#[allow(dead_code)]
 fn record_in_requirements(workspace: &Path, package: &str, summary: &mut SetupSummary) {
     let path = workspace.join("requirements.txt");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -362,6 +383,32 @@ fn push(summary: &mut SetupSummary, name: &str, ok: bool, detail: &str) {
         ok,
         detail: detail.to_string(),
     });
+}
+
+/// Run `pip freeze > requirements.txt` inside `venv` and record the step.
+/// Called after every successful pip install in pip mode so `requirements.txt`
+/// always reflects the exact, pinned state of the venv.
+async fn freeze_into_requirements(venv: &Path, workspace: &Path, summary: &mut SetupSummary) {
+    match pip::freeze_requirements(venv, workspace).await {
+        Ok(out) if out.success() => push(
+            summary,
+            "pip freeze > requirements.txt",
+            true,
+            "requirements.txt updated with exact pins",
+        ),
+        Ok(out) => push(
+            summary,
+            "pip freeze > requirements.txt",
+            false,
+            out.stderr.trim(),
+        ),
+        Err(e) => push(
+            summary,
+            "pip freeze > requirements.txt",
+            false,
+            &e.to_string(),
+        ),
+    }
 }
 
 /// Guard used by the CLI surface: refuse an empty package name rather than

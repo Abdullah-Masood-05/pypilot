@@ -115,6 +115,33 @@ async fn run_uv(
         }
     };
 
+    // Scaffold pyproject.toml when the project has none yet so that subsequent
+    // `uv add` calls have a manifest to write into. We do this before creating
+    // the venv because `uv init` itself emits a sensible initial venv via the
+    // pyproject it creates. Existing pyproject.toml files are never touched.
+    let has_pyproject = workspace.join("pyproject.toml").is_file();
+    if !has_pyproject {
+        match uv::init(&uv_info, workspace).await {
+            Ok(out) if out.success() => {
+                step_ok(summary, "uv init", "pyproject.toml created")
+            }
+            Ok(out) => {
+                // Non-zero but not fatal: the directory may already have a
+                // hello.py that uv init refuses to overwrite. Proceed and let
+                // the downstream sync/add surface a clearer error if needed.
+                step_ok(
+                    summary,
+                    "uv init",
+                    &format!("(warning) {}", out.stderr.trim()),
+                );
+            }
+            Err(e) => fail(summary, "uv init", &e.to_string()),
+        }
+        if summary.failed() {
+            return;
+        }
+    }
+
     // Install the target Python if one was determined.
     if let Some(py) = summary.python {
         match uv::python_install(&uv_info, py, workspace).await {
@@ -153,16 +180,23 @@ async fn install_deps_uv(
     assessment: &crate::core::Assessment,
     summary: &mut SetupSummary,
 ) {
+    // After run_uv may have called `uv init`, re-check for pyproject.toml.
     let has_pyproject = workspace.join("pyproject.toml").is_file();
     let requirements = workspace.join("requirements.txt");
 
     if has_pyproject {
+        // Use `uv sync` which reads pyproject.toml / uv.lock and installs the
+        // declared dependencies. If requirements.txt also exists it was either
+        // already migrated into pyproject by `uv init` or is a legacy file the
+        // user intends to keep — we do not silently remove it here.
         match uv::sync(uv_info, workspace).await {
             Ok(out) if out.success() => step_ok(summary, "uv sync", "dependencies installed"),
             Ok(out) => fail(summary, "uv sync", out.stderr.trim()),
             Err(e) => fail(summary, "uv sync", &e.to_string()),
         }
     } else if requirements.is_file() {
+        // No pyproject.toml (init must have been skipped or failed): fall back
+        // to the plain requirements install.
         match uv::pip_install_requirements(uv_info, &requirements, workspace).await {
             Ok(out) if out.success() => {
                 step_ok(summary, "uv pip install -r requirements.txt", "installed")
@@ -246,7 +280,9 @@ async fn run_pip(
     if requirements.is_file() {
         match pip::install_requirements(venv_path, &requirements, workspace).await {
             Ok(out) if out.success() => {
-                step_ok(summary, "pip install -r requirements.txt", "installed")
+                step_ok(summary, "pip install -r requirements.txt", "installed");
+                // Freeze immediately: requirements.txt now reflects exact pins.
+                freeze_into_requirements(venv_path, workspace, summary).await;
             }
             Ok(out) => fail(
                 summary,
@@ -257,7 +293,11 @@ async fn run_pip(
         }
     } else if !assessment.project.packages.is_empty() {
         match pip::install_packages(venv_path, &assessment.project.names(), None, workspace).await {
-            Ok(out) if out.success() => step_ok(summary, "pip install", "installed"),
+            Ok(out) if out.success() => {
+                step_ok(summary, "pip install", "installed");
+                // Freeze immediately: requirements.txt now reflects exact pins.
+                freeze_into_requirements(venv_path, workspace, summary).await;
+            }
             Ok(out) => fail(summary, "pip install", out.stderr.trim()),
             Err(e) => fail(summary, "pip install", &e.to_string()),
         }
@@ -267,6 +307,17 @@ async fn run_pip(
             "install dependencies",
             "no manifest to install from",
         );
+    }
+}
+
+/// Run `pip freeze > requirements.txt` inside `venv` and record the step.
+async fn freeze_into_requirements(venv: &Path, workspace: &Path, summary: &mut SetupSummary) {
+    match pip::freeze_requirements(venv, workspace).await {
+        Ok(out) if out.success() => {
+            step_ok(summary, "pip freeze > requirements.txt", "requirements.txt updated with exact pins");
+        }
+        Ok(out) => fail(summary, "pip freeze > requirements.txt", out.stderr.trim()),
+        Err(e) => fail(summary, "pip freeze > requirements.txt", &e.to_string()),
     }
 }
 
