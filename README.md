@@ -1,160 +1,118 @@
 # PyPilot for Zed
 
-You clone a Python repo, run the install, and it fails on a package that has no
-wheel for the interpreter you happen to have. PyPilot works out which Python
-version the project's dependencies can actually run on, builds the venv on that
-version, and tells you which package set the limit.
+When you clone a Python repository and run an install, it often fails because a dependency lacks a prebuilt wheel for your interpreter. PyPilot calculates which Python versions the project's dependencies actually support, configures a virtual environment on that version, and identifies the specific package causing any constraint conflict.
 
-Every answer comes from package metadata and static tables. There are no API
-keys and no model calls.
+Every resolution relies on PyPI package metadata and local lookup tables. The tool runs locally without API keys or external services.
 
 ## The problem it solves
 
-A package's `requires_python` field is often a lie of omission. mediapipe 0.10.9
-declares `>=3.8`, but the only wheels it ships are cp39 through cp312. Install it
-on Python 3.13 and pip goes looking for a source distribution that isn't there,
-then fails with something about metadata. Nothing in that error mentions Python
-versions.
+A package's `requires_python` field is often incomplete. For example, mediapipe 0.10.9 declares `>=3.8`, yet only ships wheels for cp39 through cp312. If you try installing it on Python 3.13, pip searches for an unavailable source distribution and terminates with a metadata error that never mentions Python version incompatibility.
 
-PyPilot reads both signals. It takes `requires_python` as a starting range, then
-intersects it with the interpreter versions that actually have a wheel built for
-your OS and CPU. Do that for every dependency in the project and the overlap is
-the set of interpreters the whole thing can run on. If the overlap is empty, two
-packages disagree, and PyPilot says which two and what each one needs.
+PyPilot checks both signals. It takes `requires_python` as an initial range, then intersects that range with the interpreter versions that provide prebuilt wheels for your operating system and CPU architecture. After evaluating each dependency in the workspace, the resulting intersection represents the interpreters that can run the entire project. When this intersection is empty, PyPilot names the conflicting packages and shows their incompatible requirements.
 
-Naming the two packages matters more than applying the fix, because a conflict
-between dependencies is the case where the error message tells you least.
+Naming the two conflicting packages matters more than applying an automated workaround, because a dependency collision is where package manager error output is least helpful.
 
 ## What else it catches
 
-**API that vanished between releases.** Metadata says whether a package will
-install, not whether your code will run against what got installed. mediapipe
-0.10.35 installs on every CPython 3.x and then raises `module 'mediapipe' has
-no attribute 'solutions'`, because that release dropped the legacy API. PyPilot
-reads the installed package on disk, so `mp.solutions` is flagged while you
-type rather than at runtime, along with what the package does provide.
+### Outdated or removed APIs
+Package metadata verifies whether a package installs, but cannot verify whether your code runs against that release. For example, mediapipe 0.10.35 installs cleanly on modern CPython releases and then crashes on `module 'mediapipe' has no attribute 'solutions'` because Google removed the legacy API. PyPilot inspects the installed package on disk, flagging references like `mp.solutions` in your editor while you write code instead of waiting for runtime failures.
 
-**A GPU driver too old for the wheel.** For pip-installed frameworks the driver
-is what matters, not the system CUDA toolkit: wheels bundle their own runtime
-and drivers are backwards compatible. PyPilot reads `nvidia-smi`, maps the
-driver to the newest CUDA runtime it supports, and picks the matching torch
-build, so an install pulls `cu124` rather than whatever the default index hands
-back. No GPU gets the smaller CPU index; Apple Silicon gets an MPS note.
+### GPU driver and CUDA alignment
+For pip-installed frameworks, the host NVIDIA display driver determines compatibility rather than the system CUDA toolkit. Wheels package their own CUDA runtime, and display drivers remain backward compatible. PyPilot inspects `nvidia-smi`, maps the driver to its highest supported CUDA runtime, and selects the matching PyTorch index (such as `cu124` instead of a mismatched default). Systems without a dedicated GPU use CPU wheels, while Apple Silicon devices receive MPS guidance.
 
-**A pin that changes the answer.** `mediapipe==0.10.14` is judged on that
-release's wheels, which stop at 3.12, not on the newest release's.
+### Pinned version constraints
+Pinned dependencies restrict the wheel search space. A declaration like `mediapipe==0.10.14` is evaluated against wheels published for that specific release (which ended at Python 3.12), rather than the wider matrix of newer releases.
 
-## Install
+## Environment management with uv and pip
 
-Search for "PyPilot" in Zed's extension panel and install it from there. Opening
-a Python project runs an environment scan automatically and shows a
-notification if something needs fixing.
+PyPilot supports both `uv` and standard `pip` for managing virtual environments.
 
-### From a local build
+### Project initialization and uv mode
+When `package_manager = "uv"` (the default):
+- If the project directory lacks a `pyproject.toml`, PyPilot runs `uv init` to create one.
+- If a `requirements.txt` file exists during setup, PyPilot reads its dependencies and runs `uv add` to migrate them directly into the new `pyproject.toml`.
+- Running `pypilot install <package>` invokes `uv add <package>`, adding the dependency to the project manifest and syncing the environment.
 
-To try the extension before it's in the registry, put `pypilot` on your PATH
-with `cargo install --path helper`, then run `zed: install dev extension` from
-the command palette and pick the `extension` directory. The shim prefers a
-`pypilot` already on PATH over downloading a release, so your local build is
-what runs.
+### Pip fallback and freeze synchronization
+When `uv` is unavailable on the system or `package_manager = "pip"` is explicitly configured:
+- PyPilot creates the virtual environment using Python's standard `venv` module.
+- Dependencies are installed using `pip install`.
+- After each installation or dependency modification, PyPilot runs `pip freeze > requirements.txt` to update the file with pinned versions. This keeps your dependencies documented and reproducible even without a lockfile manager.
 
-## Status
+## Installation
 
-All four roadmap phases are implemented: the skeleton and CI, the compatibility
-engine and bootstrap, the live import guardian, and the hardware layer. What
-remains is publishing to the Zed extension registry, which needs a tagged
-release first.
+Install PyPilot from Zed's extension panel. When you open a Python folder, the extension automatically inspects the environment and opens a notification if action is required.
 
-## How it fits together
+### Local development build
+To test the extension locally:
+1. Build and install the helper binary with `cargo install --path helper`.
+2. In Zed, open the command palette and run `zed: install dev extension`, selecting the `extension` directory.
 
-The Zed extension in `extension/` is a WASM shim of under 200 lines. It detects
-your platform, downloads the matching helper binary, and registers it as a
-language server. It holds no logic of its own, which keeps Zed API changes from
-reaching anything important.
+The extension checks PATH first, running your local binary instead of fetching a release from GitHub.
 
-Everything else lives in `helper/`, a native binary sharing one library across
-every mode:
+## Architecture
 
-```
-pypilot doctor            read-only report, changes nothing
-pypilot setup             build the environment
-pypilot check <package>   can this package run on this project's Python?
-pypilot install <pkg>     install one package and record it in the manifest
-pypilot fix python        rebuild the environment on the right version
-pypilot fix cuda          re-pin torch/tensorflow to the driver's build
-pypilot update-data       refresh the bundled driver/framework/import tables
-pypilot migrate-conda     translate environment.yml into pyproject.toml
-pypilot lsp               stdio LSP server, the mode Zed launches
-```
+PyPilot splits work between two components:
+- A WebAssembly shim in `extension/` that runs inside Zed. It identifies the host platform, downloads the precompiled helper binary for that architecture, and registers it with Zed as an LSP server.
+- A native Rust binary in `helper/` that runs all analysis, environment orchestration, dependency parsing, and LSP communication.
 
-The helper knows nothing about Zed and works in any terminal or CI job. The
-toast button labelled "Fix everything" and the `pypilot setup` command call the
-same function, so the two surfaces cannot drift apart.
+Because the editor extension contains no business logic, changes in Zed extension APIs do not affect environment resolution or compatibility checking.
 
-Running `doctor` or `setup` from a Zed task also writes a small request file
-into the cache directory. If an LSP instance is watching that workspace it
-picks the request up within a second and shows the result as a notification, so
-a task run gets the same actionable buttons as the startup scan.
-
-## Layout
+## Repository layout
 
 ```
 pypilot/
-├─ extension/            Zed WASM shim (extension.toml + src/lib.rs)
-├─ helper/               native binary
-│  ├─ src/
-│  │  ├─ main.rs         mode dispatch
-│  │  ├─ cli/            one front end per command
-│  │  ├─ lsp/            tower-lsp server, diagnostics, code actions
-│  │  ├─ core/           probes, project parsing, solver, uv and pip drivers
-│  │  ├─ pypi/           metadata client, wheel tag parser, disk cache
-│  │  └─ matrix/         GPU driver and framework tables, data refresh
-│  ├─ data/              nvidia.json, frameworks.json, import_map.json
-│  └─ tests/             fixtures and offline integration tests
-├─ tasks/                Zed task templates
-└─ .github/workflows/    cross platform CI and release builds
+├── extension/           Zed WebAssembly shim (extension.toml and src/lib.rs)
+├── helper/              Native helper binary
+│   ├── src/
+│   │   ├── main.rs      CLI command dispatch
+│   │   ├── cli/         Subcommand entry points
+│   │   ├── lsp/         Language server protocol implementation
+│   │   ├── core/        Virtual environment management, uv and pip drivers, solver
+│   │   ├── pypi/        Package metadata parser and local cache
+│   │   └── matrix/      Driver and framework compatibility tables
+│   ├── data/            Bundled JSON tables for NVIDIA and frameworks
+│   └── tests/           Fixtures and offline test suites
+├── tasks/               Zed task templates
+└── .github/workflows/   CI and release automation workflows
 ```
-
-## Settings
-
-Global config lives in the platform config directory. A project can override any
-key from `.zed/pypilot.toml` or `pypilot.toml` in its root.
-
-```toml
-package_manager    = "uv"             # "uv" or "pip". pip mode never touches uv.
-notifications      = "problems-only"  # "all", "problems-only", or "off"
-auto_check_on_open = true
-data_refresh_days  = 7                # 0 stays fully offline
-```
-
-In pip mode the compatibility checks are identical, because none of that logic
-knows which installer you use. What changes is that pip cannot fetch a missing
-interpreter, so if the project needs Python 3.12 and you don't have it, PyPilot
-says so instead of installing it for you.
-
-`notifications` decides how much reaches the notification: `problems-only`
-raises one for warnings and errors, `all` also surfaces informational findings
-such as the CUDA build it picked, and `off` stays quiet. Diagnostics and code
-actions on your buffers are unaffected by anything except `off`.
-
-`data_refresh_days` is the TTL on the driver, framework and import tables. They
-ship inside the binary, so an offline machine is never wrong, only potentially
-stale; a background refresh replaces them from this repo when the TTL lapses,
-falling back silently to the bundled copy on any failure. `0` disables the
-network entirely, and `pypilot update-data` forces a refresh regardless.
 
 ## Commands
 
-Zed gives extensions no way to add command palette entries, so the commands ship
-as tasks. Copy `tasks/pypilot.json` into `.zed/tasks.json` for one project, or
-into your global Zed `tasks.json`, then run them from `task: spawn`.
+Zed extensions execute external actions through tasks. To use PyPilot commands inside Zed, copy `tasks/pypilot.json` into `.zed/tasks.json` within your workspace or into your global Zed tasks configuration. You can then trigger them using `task: spawn`.
 
-On Windows, Zed cannot spawn Microsoft Store app execution aliases, which is
-most PowerShell 7 installs. If a task fails with "os error 193", point the task
-at a real executable such as `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`.
-The template has the details.
+The helper binary also runs directly in any shell:
 
-## Build and test
+```
+pypilot doctor            Inspect the environment and print a status report
+pypilot setup             Configure the virtual environment and install dependencies
+pypilot check <package>   Check whether a package runs on the current Python version
+pypilot install <pkg>     Install a package and update the project manifest
+pypilot fix python        Rebuild the virtual environment on a compatible Python version
+pypilot fix cuda          Re-pin torch and tensorflow to the system driver build
+pypilot update-data       Update the bundled driver and framework data tables
+pypilot migrate-conda     Convert environment.yml into pyproject.toml
+pypilot lsp               Start the language server (launched automatically by Zed)
+```
+
+Running `pypilot doctor` or `pypilot setup` from a Zed task also writes a request file to the cache directory. The running language server reads this file and presents the results as interactive editor notifications.
+
+## Configuration
+
+PyPilot stores default configuration in your platform config directory. Projects can override these options by creating a `.zed/pypilot.toml` or `pypilot.toml` file in the workspace root:
+
+```toml
+package_manager    = "uv"             # "uv" or "pip". Pip mode does not invoke uv.
+notifications      = "problems-only"  # "all", "problems-only", or "off"
+auto_check_on_open = true
+data_refresh_days  = 7                # Set to 0 to disable network updates.
+```
+
+- `package_manager`: Selects whether to manage packages using `uv` or `pip`. In pip mode, PyPilot cannot download new Python interpreter versions automatically; if an incompatible version is detected, it informs you which Python version to install manually.
+- `notifications`: Controls alert frequency. `problems-only` warns about errors and version mismatches. `all` includes informational alerts like selected CUDA builds. `off` suppresses editor notifications. Diagnostics and code actions in active editor buffers remain enabled unless set to `off`.
+- `data_refresh_days`: The refresh interval for the bundled driver and framework matrices. PyPilot ships with embedded JSON tables for offline use. If a background check fails, it falls back to the embedded data.
+
+## Building from source
 
 ```bash
 cargo test  -p pypilot-helper
@@ -164,22 +122,10 @@ rustup target add wasm32-wasip2
 cargo build -p pypilot-zed --target wasm32-wasip2 --release
 ```
 
-The tests never touch the network. PyPI responses are recorded JSON fixtures,
-and the platform is pinned to Linux x86-64 inside the wheel tag tests so results
-don't change with the machine running them.
+Tests run offline against recorded PyPI fixtures and fixed Linux x86-64 target tags.
 
 ## License
 
-Two licenses, because the two halves are distributed differently.
-
-`helper/`, which is the whole engine, is **AGPL-3.0-or-later**. See
-[helper/LICENSE](helper/LICENSE).
-
-`extension/`, the WASM shim Zed compiles and distributes, is **Apache-2.0**. See
-[LICENSE](LICENSE). Zed's extension registry only accepts a fixed list of
-licenses for the code that becomes the extension binary, and AGPL is not on it.
-Their rules exempt tools the extension merely downloads and runs, naming
-language servers specifically, which is exactly what the helper is.
-
-In practice: use PyPilot however you like. Ship a modified helper and you owe
-users its source.
+PyPilot uses two licenses corresponding to its components:
+- `helper/` is licensed under AGPL-3.0-or-later. See [helper/LICENSE](helper/LICENSE).
+- `extension/` is licensed under Apache-2.0. See [LICENSE](LICENSE). This complies with the Zed extension registry requirements for extension frontends.
