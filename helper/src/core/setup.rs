@@ -182,11 +182,21 @@ async fn install_deps_uv(
     let has_pyproject = workspace.join("pyproject.toml").is_file();
     let requirements = workspace.join("requirements.txt");
 
-    if has_pyproject {
+    if has_pyproject && requirements.is_file() {
+        // If requirements.txt exists and pyproject.toml exists (whether newly created by
+        // `uv init` or pre-existing), add and resolve dependencies using `uv add -r requirements.txt`.
+        match uv::add_requirements(uv_info, &requirements, None, workspace).await {
+            Ok(out) if out.success() => step_ok(
+                summary,
+                "uv add -r requirements.txt",
+                "dependencies added to pyproject.toml and installed",
+            ),
+            Ok(out) => fail(summary, "uv add -r requirements.txt", out.stderr.trim()),
+            Err(e) => fail(summary, "uv add -r requirements.txt", &e.to_string()),
+        }
+    } else if has_pyproject {
         // Use `uv sync` which reads pyproject.toml / uv.lock and installs the
-        // declared dependencies. If requirements.txt also exists it was either
-        // already migrated into pyproject by `uv init` or is a legacy file the
-        // user intends to keep — we do not silently remove it here.
+        // declared dependencies.
         match uv::sync(uv_info, workspace).await {
             Ok(out) if out.success() => step_ok(summary, "uv sync", "dependencies installed"),
             Ok(out) => fail(summary, "uv sync", out.stderr.trim()),

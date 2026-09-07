@@ -199,7 +199,29 @@ pub async fn init(uv: &UvInfo, cwd: &Path) -> crate::Result<Output> {
 /// added. This avoids leaving a stale `requirements.txt` that pip-based tools
 /// would re-read incorrectly.
 ///
-/// If there is no `requirements.txt`, this is a pure delegation to [`add`].
+/// `uv add -r <file>`: records dependencies from a requirements file into pyproject.toml and installs them.
+pub async fn add_requirements(
+    uv: &UvInfo,
+    requirements_file: &Path,
+    index_url: Option<&str>,
+    cwd: &Path,
+) -> crate::Result<Output> {
+    let mut args: Vec<String> = vec!["add".into(), "-r".into()];
+    let file_arg = if let Ok(rel) = requirements_file.strip_prefix(cwd) {
+        rel.display().to_string()
+    } else {
+        requirements_file.display().to_string()
+    };
+    args.push(file_arg);
+    if let Some(url) = index_url {
+        args.push("--index".into());
+        args.push(url.to_string());
+    }
+    command::run(&uv.path, &args, Some(cwd)).await
+}
+
+/// `uv add -r requirements.txt <pkgs...>`: records dependencies from requirements.txt
+/// and any new packages into pyproject.toml.
 pub async fn add_with_requirements_migration(
     uv: &UvInfo,
     packages: &[String],
@@ -208,36 +230,16 @@ pub async fn add_with_requirements_migration(
 ) -> crate::Result<Output> {
     let req_path = cwd.join("requirements.txt");
     if req_path.is_file() {
-        // Best-effort migration: read current requirements.txt entries.
-        let existing_pkgs: Vec<String> = std::fs::read_to_string(&req_path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| {
-                let t = l.trim();
-                !t.is_empty() && !t.starts_with('#') && !t.starts_with('-')
-            })
-            .map(|l| l.to_string())
-            .collect();
-
-        let mut all_pkgs = existing_pkgs;
-        for p in packages {
-            if !all_pkgs.iter().any(|e| {
-                crate::core::project::requirement_name(e).as_deref()
-                    == crate::core::project::requirement_name(p).as_deref()
-            }) {
-                all_pkgs.push(p.clone());
-            }
+        let mut args: Vec<String> = vec!["add".into(), "-r".into(), "requirements.txt".into()];
+        if let Some(url) = index_url {
+            args.push("--index".into());
+            args.push(url.to_string());
         }
-
-        let out = add(uv, &all_pkgs, index_url, cwd).await?;
-        // Remove the requirements.txt now that pyproject.toml tracks deps.
-        if out.success() {
-            let _ = std::fs::remove_file(&req_path);
-        }
-        return Ok(out);
+        args.extend(packages.iter().cloned());
+        command::run(&uv.path, &args, Some(cwd)).await
+    } else {
+        add(uv, packages, index_url, cwd).await
     }
-
-    add(uv, packages, index_url, cwd).await
 }
 
 /// `uv add <pkgs...>` — records the dependency in pyproject.toml and installs it.
