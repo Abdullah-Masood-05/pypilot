@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="128" height="128" alt="PyPilot Logo" />
+</p>
+
 # PyPilot for Zed
 
 When you clone a Python repository and run an install, it often fails because a dependency lacks a prebuilt wheel for your interpreter. PyPilot calculates which Python versions the project's dependencies actually support, configures a virtual environment on that version, and identifies the specific package causing any constraint conflict.
