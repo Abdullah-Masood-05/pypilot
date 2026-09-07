@@ -122,9 +122,7 @@ async fn run_uv(
     let has_pyproject = workspace.join("pyproject.toml").is_file();
     if !has_pyproject {
         match uv::init(&uv_info, workspace).await {
-            Ok(out) if out.success() => {
-                step_ok(summary, "uv init", "pyproject.toml created")
-            }
+            Ok(out) if out.success() => step_ok(summary, "uv init", "pyproject.toml created"),
             Ok(out) => {
                 // Non-zero but not fatal: the directory may already have a
                 // hello.py that uv init refuses to overwrite. Proceed and let
@@ -313,9 +311,11 @@ async fn run_pip(
 /// Run `pip freeze > requirements.txt` inside `venv` and record the step.
 async fn freeze_into_requirements(venv: &Path, workspace: &Path, summary: &mut SetupSummary) {
     match pip::freeze_requirements(venv, workspace).await {
-        Ok(out) if out.success() => {
-            step_ok(summary, "pip freeze > requirements.txt", "requirements.txt updated with exact pins");
-        }
+        Ok(out) if out.success() => step_ok(
+            summary,
+            "pip freeze > requirements.txt",
+            "requirements.txt updated with exact pins",
+        ),
         Ok(out) => fail(summary, "pip freeze > requirements.txt", out.stderr.trim()),
         Err(e) => fail(summary, "pip freeze > requirements.txt", &e.to_string()),
     }
