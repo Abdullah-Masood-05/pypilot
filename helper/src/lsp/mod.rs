@@ -3,7 +3,7 @@
 //! Two surfaces share one engine.
 //!
 //! On workspace open, a probe and compatibility pass raises at most one
-//! notification with `[Fix everything] [Show details] [Ignore] [Never for this
+//! notification with `[Fix environment] [Show details] [Ignore] [Never for this
 //! project]`. If the environment is already correct it stays quiet.
 //!
 //! On Python buffers, imports that cannot resolve become diagnostics with quick
@@ -33,7 +33,7 @@ use crate::core::{
 };
 use crate::pypi::pyversion::PyVersion;
 use crate::pypi::PyPiClient;
-use crate::settings::{Notifications, Settings};
+use crate::settings::{Notifications, PackageManager, ResolvedMode, Settings};
 
 use diagnostics::{CMD_INSTALL, CMD_RECREATE};
 
@@ -42,12 +42,18 @@ const CMD_FIX: &str = "pypilot.fixEverything";
 const CMD_DETAILS: &str = "pypilot.showDetails";
 const CMD_IGNORE: &str = "pypilot.ignore";
 const CMD_NEVER: &str = "pypilot.neverForProject";
+const CMD_INSTALL_UV: &str = "pypilot.installUv";
 
 // Notification button labels.
-const BTN_FIX: &str = "Fix everything";
+const BTN_FIX: &str = "Fix environment";
 const BTN_DETAILS: &str = "Show details";
 const BTN_IGNORE: &str = "Ignore";
 const BTN_NEVER: &str = "Never for this project";
+
+const BTN_INSTALL_UV: &str = "Install uv";
+const BTN_NO_THANKS: &str = "No thanks";
+const BTN_MODE_UV_PROJECT: &str = "uv project (pyproject.toml + lockfile)";
+const BTN_MODE_PIP_COMPAT: &str = "pip-compatible (requirements.txt, faster via uv)";
 
 /// How long the buffer must be idle before the guardian runs.
 const IDLE_DEBOUNCE: Duration = Duration::from_secs(1);
@@ -91,6 +97,7 @@ impl LanguageServer for Backend {
                         CMD_NEVER.into(),
                         CMD_INSTALL.into(),
                         CMD_RECREATE.into(),
+                        CMD_INSTALL_UV.into(),
                     ],
                     work_done_progress_options: Default::default(),
                 }),
@@ -199,6 +206,8 @@ impl LanguageServer for Backend {
                 };
                 run_recreate(self.shared.clone(), &root, &python, &package).await;
             }
+
+            CMD_INSTALL_UV => run_install_uv(client).await,
 
             other => {
                 client
@@ -482,11 +491,84 @@ async fn scan_and_notify(client: &Client, source: &PyPiClient, root: &Path, expl
 async fn run_fix(client: &Client, source: &PyPiClient, root: &Path) {
     let settings = Settings::load(root);
 
+    let mode = if settings.package_manager == PackageManager::Auto
+        && crate::core::uv::is_system_installed().await.is_none()
+    {
+        // Tier B: uv is NOT on PATH, prompt user to install
+        let install_actions = vec![action(BTN_INSTALL_UV), action(BTN_NO_THANKS)];
+        let chosen = client
+            .show_message_request(
+                MessageType::INFO,
+                "PyPilot: uv provides faster installs (~18 MB, installed once globally). Install it?",
+                Some(install_actions),
+            )
+            .await
+            .ok()
+            .flatten();
+
+        if chosen.as_ref().map(|a| a.title.as_str()) == Some(BTN_INSTALL_UV) {
+            // Prompt 2: uv project mode vs pip-compatible mode
+            let mode_actions = vec![action(BTN_MODE_UV_PROJECT), action(BTN_MODE_PIP_COMPAT)];
+            let mode_chosen = client
+                .show_message_request(
+                    MessageType::INFO,
+                    "PyPilot: How should PyPilot manage your project?",
+                    Some(mode_actions),
+                )
+                .await
+                .ok()
+                .flatten();
+
+            let target_mode = match mode_chosen.as_ref().map(|a| a.title.as_str()) {
+                Some(BTN_MODE_UV_PROJECT) => ResolvedMode::UvFull,
+                _ => ResolvedMode::UvPipCompat,
+            };
+
+            client
+                .show_message(MessageType::INFO, "PyPilot: installing uv globally…")
+                .await;
+
+            match crate::core::uv::install_globally().await {
+                Ok(info) => {
+                    client
+                        .show_message(
+                            MessageType::INFO,
+                            format!(
+                                "PyPilot: uv v{} installed globally. In existing terminals, refresh PATH with: {}",
+                                info.version,
+                                crate::core::uv::refresh_path_command()
+                            ),
+                        )
+                        .await;
+
+                    if target_mode == ResolvedMode::UvPipCompat {
+                        let _ = Settings::persist_package_manager(root, PackageManager::UvPip);
+                    }
+                    target_mode
+                }
+                Err(e) => {
+                    client
+                        .show_message(
+                            MessageType::ERROR,
+                            format!("PyPilot: global uv install failed ({e}), falling back to pip mode."),
+                        )
+                        .await;
+                    ResolvedMode::PurePip
+                }
+            }
+        } else {
+            // Tier C: user declined uv install
+            ResolvedMode::PurePip
+        }
+    } else {
+        settings.resolve_mode().await
+    };
+
     client
         .show_message(MessageType::INFO, "PyPilot: setting up the environment…")
         .await;
 
-    match setup::run(root, &settings, source).await {
+    match setup::run_with_mode(root, &settings, source, mode).await {
         Ok(summary) if summary.ok => {
             let py = summary
                 .python
@@ -508,6 +590,46 @@ async fn run_fix(client: &Client, source: &PyPiClient, root: &Path) {
         Err(e) => {
             client
                 .show_message(MessageType::ERROR, format!("PyPilot: setup error. {e}"))
+                .await;
+        }
+    }
+}
+
+async fn run_install_uv(client: &Client) {
+    if let Some(info) = crate::core::uv::is_system_installed().await {
+        client
+            .show_message(
+                MessageType::INFO,
+                format!(
+                    "PyPilot: uv v{} is already installed on your system.",
+                    info.version
+                ),
+            )
+            .await;
+        return;
+    }
+    client
+        .show_message(MessageType::INFO, "PyPilot: installing uv globally…")
+        .await;
+    match crate::core::uv::install_globally().await {
+        Ok(info) => {
+            client
+                .show_message(
+                    MessageType::INFO,
+                    format!(
+                        "PyPilot: uv v{} installed globally. In existing terminals, refresh PATH with: {}",
+                        info.version,
+                        crate::core::uv::refresh_path_command()
+                    ),
+                )
+                .await;
+        }
+        Err(e) => {
+            client
+                .show_message(
+                    MessageType::ERROR,
+                    format!("PyPilot: global uv install failed: {e}"),
+                )
                 .await;
         }
     }
@@ -660,7 +782,7 @@ fn details_markdown(a: &Assessment) -> String {
                     "\n_Fix: rebuild the environment on Python {v}._\n"
                 ));
             } else if f.fix == FixKind::SetupEnvironment {
-                s.push_str("\n_Fix: run \"Fix everything\", or `pypilot setup`._\n");
+                s.push_str("\n_Fix: run \"Fix environment\", or `pypilot setup`._\n");
             } else if f.fix == FixKind::MigrateConda {
                 s.push_str("\n_Fix: run `pypilot migrate-conda`._\n");
             }

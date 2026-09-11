@@ -14,7 +14,7 @@ use crate::core::solver;
 use crate::core::{pip, uv};
 use crate::pypi::pyversion::PyVersion;
 use crate::pypi::MetadataSource;
-use crate::settings::{PackageManager, Settings};
+use crate::settings::{PackageManager, ResolvedMode, Settings};
 
 /// One executed step, for a human-readable summary.
 #[derive(Debug, Clone)]
@@ -28,6 +28,7 @@ pub struct Step {
 #[derive(Debug, Clone)]
 pub struct SetupSummary {
     pub package_manager: PackageManager,
+    pub resolved_mode: ResolvedMode,
     pub python: Option<PyVersion>,
     pub venv_path: PathBuf,
     pub why: String,
@@ -42,17 +43,29 @@ impl SetupSummary {
     }
 }
 
-/// Run the full bootstrap for `workspace`, honoring `package_manager`.
+/// Run the full bootstrap for `workspace`, honoring `package_manager` and resolved mode.
 pub async fn run<S: MetadataSource>(
     workspace: &Path,
     settings: &Settings,
     source: &S,
+) -> crate::Result<SetupSummary> {
+    let mode = settings.resolve_mode().await;
+    run_with_mode(workspace, settings, source, mode).await
+}
+
+/// Run bootstrap for `workspace` with an explicit resolved mode (e.g. from user prompt).
+pub async fn run_with_mode<S: MetadataSource>(
+    workspace: &Path,
+    settings: &Settings,
+    source: &S,
+    mode: ResolvedMode,
 ) -> crate::Result<SetupSummary> {
     let assessment = solver::assess(workspace, settings, source).await;
 
     let venv_path = workspace.join(".venv");
     let mut summary = SetupSummary {
         package_manager: settings.package_manager,
+        resolved_mode: mode,
         python: assessment.target_python,
         venv_path: venv_path.clone(),
         why: derive_why(&assessment),
@@ -78,18 +91,20 @@ pub async fn run<S: MetadataSource>(
         }
     }
 
-    match settings.package_manager {
-        PackageManager::Uv => {
-            run_uv(workspace, settings, &assessment, &venv_path, &mut summary).await
+    match mode {
+        ResolvedMode::UvFull => {
+            run_uv_full(workspace, settings, &assessment, &venv_path, &mut summary).await
         }
-
-        PackageManager::Pip => run_pip(workspace, &assessment, &venv_path, &mut summary).await,
+        ResolvedMode::UvPipCompat => {
+            run_uv_pip_compat(workspace, settings, &assessment, &venv_path, &mut summary).await
+        }
+        ResolvedMode::PurePip => run_pip(workspace, &assessment, &venv_path, &mut summary).await,
     }
 
     Ok(summary)
 }
 
-async fn run_uv(
+async fn run_uv_full(
     workspace: &Path,
     settings: &Settings,
     assessment: &crate::core::Assessment,
@@ -228,6 +243,130 @@ async fn install_deps_uv(
         );
     }
     let _ = assessment;
+}
+
+async fn run_uv_pip_compat(
+    workspace: &Path,
+    settings: &Settings,
+    assessment: &crate::core::Assessment,
+    venv_path: &Path,
+    summary: &mut SetupSummary,
+) {
+    let uv_info = match uv::ensure(settings).await {
+        Ok(info) => {
+            summary.steps.push(Step {
+                name: "ensure uv".into(),
+                ok: true,
+                detail: format!(
+                    "uv {} ({})",
+                    info.version,
+                    if info.managed { "managed" } else { "on PATH" }
+                ),
+            });
+            info
+        }
+        Err(e) => {
+            fail(summary, "ensure uv", &e.to_string());
+            return;
+        }
+    };
+
+    // In pip-compatible mode: NEVER call uv init, NEVER create pyproject.toml / uv.lock.
+    // Use uv venv + uv pip install + uv pip freeze into requirements.txt.
+    let target_py = summary
+        .python
+        .or_else(|| assessment.probes.interpreters.first().map(|i| i.version));
+
+    if let Some(py) = target_py {
+        match uv::python_install(&uv_info, py, workspace).await {
+            Ok(out) if out.success() => {
+                step_ok(summary, &format!("uv python install {py}"), "ready")
+            }
+            Ok(out) => fail(
+                summary,
+                &format!("uv python install {py}"),
+                out.stderr.trim(),
+            ),
+            Err(e) => fail(summary, &format!("uv python install {py}"), &e.to_string()),
+        }
+        if summary.failed() {
+            return;
+        }
+
+        match uv::create_venv(&uv_info, py, venv_path, workspace).await {
+            Ok(out) if out.success() => {
+                step_ok(summary, "uv venv", &venv_path.display().to_string())
+            }
+            Ok(out) => fail(summary, "uv venv", out.stderr.trim()),
+            Err(e) => fail(summary, "uv venv", &e.to_string()),
+        }
+        if summary.failed() {
+            return;
+        }
+    }
+
+    let requirements = workspace.join("requirements.txt");
+    if requirements.is_file() {
+        match uv::pip_install_requirements(&uv_info, &requirements, workspace).await {
+            Ok(out) if out.success() => {
+                step_ok(summary, "uv pip install -r requirements.txt", "installed");
+                freeze_into_requirements_uv(&uv_info, workspace, summary).await;
+            }
+            Ok(out) => fail(
+                summary,
+                "uv pip install -r requirements.txt",
+                out.stderr.trim(),
+            ),
+            Err(e) => fail(
+                summary,
+                "uv pip install -r requirements.txt",
+                &e.to_string(),
+            ),
+        }
+    } else if !assessment.project.packages.is_empty() {
+        match uv::pip_install(&uv_info, &assessment.project.names(), None, workspace).await {
+            Ok(out) if out.success() => {
+                step_ok(summary, "uv pip install", "installed");
+                freeze_into_requirements_uv(&uv_info, workspace, summary).await;
+            }
+            Ok(out) => fail(summary, "uv pip install", out.stderr.trim()),
+            Err(e) => fail(summary, "uv pip install", &e.to_string()),
+        }
+    } else {
+        step_ok(
+            summary,
+            "install dependencies",
+            "no manifest to install from",
+        );
+    }
+}
+
+/// Run `uv pip freeze > requirements.txt` and record the step.
+pub(crate) async fn freeze_into_requirements_uv(
+    uv: &uv::UvInfo,
+    workspace: &Path,
+    summary: &mut SetupSummary,
+) {
+    match uv::pip_freeze(uv, workspace).await {
+        Ok(out) if out.success() => {
+            let path = workspace.join("requirements.txt");
+            if let Err(e) = std::fs::write(&path, &out.stdout) {
+                fail(summary, "uv pip freeze > requirements.txt", &e.to_string());
+            } else {
+                step_ok(
+                    summary,
+                    "uv pip freeze > requirements.txt",
+                    "requirements.txt updated with exact pins",
+                );
+            }
+        }
+        Ok(out) => fail(
+            summary,
+            "uv pip freeze > requirements.txt",
+            out.stderr.trim(),
+        ),
+        Err(e) => fail(summary, "uv pip freeze > requirements.txt", &e.to_string()),
+    }
 }
 
 async fn run_pip(

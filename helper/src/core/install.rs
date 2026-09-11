@@ -19,7 +19,7 @@ use crate::core::setup::{SetupSummary, Step};
 use crate::core::{pip, uv};
 use crate::matrix;
 use crate::pypi::pyversion::PyVersion;
-use crate::settings::{PackageManager, Settings};
+use crate::settings::{ResolvedMode, Settings};
 
 /// Install `package` into the project's existing environment and record it.
 pub async fn install_package(
@@ -27,8 +27,10 @@ pub async fn install_package(
     settings: &Settings,
     package: &str,
 ) -> crate::Result<SetupSummary> {
+    let mode = settings.resolve_mode().await;
     let mut summary = SetupSummary {
         package_manager: settings.package_manager,
+        resolved_mode: mode,
         python: None,
         venv_path: workspace.join(".venv"),
         why: format!("Installing {package}."),
@@ -48,8 +50,8 @@ pub async fn install_package(
     }
     let index_url = hardware.as_ref().and_then(|h| h.index_url.as_deref());
 
-    match settings.package_manager {
-        PackageManager::Uv => {
+    match mode {
+        ResolvedMode::UvFull => {
             let uv_info = match uv::ensure(settings).await {
                 Ok(info) => info,
                 Err(e) => {
@@ -118,7 +120,49 @@ pub async fn install_package(
                 ),
             }
         }
-        PackageManager::Pip => {
+        ResolvedMode::UvPipCompat => {
+            let uv_info = match uv::ensure(settings).await {
+                Ok(info) => info,
+                Err(e) => {
+                    push(&mut summary, "ensure uv", false, &e.to_string());
+                    return Ok(summary);
+                }
+            };
+            let venv = workspace.join(".venv");
+            if !venv.is_dir() {
+                push(
+                    &mut summary,
+                    "locate venv",
+                    false,
+                    "no .venv in this project; run setup first",
+                );
+                return Ok(summary);
+            }
+            match uv::pip_install(&uv_info, &pkgs, index_url, workspace).await {
+                Ok(out) if out.success() => {
+                    push(
+                        &mut summary,
+                        &format!("uv pip install {package}"),
+                        true,
+                        "installed",
+                    );
+                    freeze_into_requirements_uv(&uv_info, workspace, &mut summary).await;
+                }
+                Ok(out) => push(
+                    &mut summary,
+                    &format!("uv pip install {package}"),
+                    false,
+                    out.stderr.trim(),
+                ),
+                Err(e) => push(
+                    &mut summary,
+                    &format!("uv pip install {package}"),
+                    false,
+                    &e.to_string(),
+                ),
+            }
+        }
+        ResolvedMode::PurePip => {
             let venv = workspace.join(".venv");
             if !venv.is_dir() {
                 push(
@@ -170,9 +214,11 @@ pub async fn recreate_with_python(
     version: PyVersion,
     package: &str,
 ) -> crate::Result<SetupSummary> {
+    let mode = settings.resolve_mode().await;
     let venv_path = workspace.join(".venv");
     let mut summary = SetupSummary {
         package_manager: settings.package_manager,
+        resolved_mode: mode,
         python: Some(version),
         venv_path: venv_path.clone(),
         why: format!("Rebuilding the environment on Python {version} so {package} can install."),
@@ -180,8 +226,8 @@ pub async fn recreate_with_python(
         ok: true,
     };
 
-    match settings.package_manager {
-        PackageManager::Uv => {
+    match mode {
+        ResolvedMode::UvFull => {
             let uv_info = match uv::ensure(settings).await {
                 Ok(info) => info,
                 Err(e) => {
@@ -268,7 +314,85 @@ pub async fn recreate_with_python(
                 return Ok(summary);
             }
         }
-        PackageManager::Pip => {
+        ResolvedMode::UvPipCompat => {
+            let uv_info = match uv::ensure(settings).await {
+                Ok(info) => info,
+                Err(e) => {
+                    push(&mut summary, "ensure uv", false, &e.to_string());
+                    return Ok(summary);
+                }
+            };
+
+            match uv::python_install(&uv_info, version, workspace).await {
+                Ok(out) if out.success() => push(
+                    &mut summary,
+                    &format!("uv python install {version}"),
+                    true,
+                    "ready",
+                ),
+                Ok(out) => push(
+                    &mut summary,
+                    &format!("uv python install {version}"),
+                    false,
+                    out.stderr.trim(),
+                ),
+                Err(e) => push(
+                    &mut summary,
+                    &format!("uv python install {version}"),
+                    false,
+                    &e.to_string(),
+                ),
+            }
+            if !summary.ok {
+                return Ok(summary);
+            }
+
+            match uv::create_venv(&uv_info, version, &venv_path, workspace).await {
+                Ok(out) if out.success() => push(
+                    &mut summary,
+                    "uv venv",
+                    true,
+                    &venv_path.display().to_string(),
+                ),
+                Ok(out) => push(&mut summary, "uv venv", false, out.stderr.trim()),
+                Err(e) => push(&mut summary, "uv venv", false, &e.to_string()),
+            }
+            if !summary.ok {
+                return Ok(summary);
+            }
+
+            // In pip-compatible mode, restore dependencies from requirements.txt only
+            let requirements = workspace.join("requirements.txt");
+            if requirements.is_file() {
+                match uv::pip_install_requirements(&uv_info, &requirements, workspace).await {
+                    Ok(out) if out.success() => {
+                        push(
+                            &mut summary,
+                            "reinstall requirements.txt",
+                            true,
+                            "existing dependencies restored",
+                        );
+                        freeze_into_requirements_uv(&uv_info, workspace, &mut summary).await;
+                    }
+                    Ok(out) => push(
+                        &mut summary,
+                        "reinstall requirements.txt",
+                        false,
+                        out.stderr.trim(),
+                    ),
+                    Err(e) => push(
+                        &mut summary,
+                        "reinstall requirements.txt",
+                        false,
+                        &e.to_string(),
+                    ),
+                }
+            }
+            if !summary.ok {
+                return Ok(summary);
+            }
+        }
+        ResolvedMode::PurePip => {
             // pip mode cannot fetch interpreters, so the version must be present.
             let interpreters = crate::core::interpreter::discover().await;
             let Some(interp) = pip::select_interpreter(&interpreters, version) else {
@@ -411,6 +535,46 @@ async fn freeze_into_requirements(venv: &Path, workspace: &Path, summary: &mut S
     }
 }
 
+/// Run `uv pip freeze > requirements.txt` and record the step.
+async fn freeze_into_requirements_uv(
+    uv: &uv::UvInfo,
+    workspace: &Path,
+    summary: &mut SetupSummary,
+) {
+    match uv::pip_freeze(uv, workspace).await {
+        Ok(out) if out.success() => {
+            let path = workspace.join("requirements.txt");
+            if let Err(e) = std::fs::write(&path, &out.stdout) {
+                push(
+                    summary,
+                    "uv pip freeze > requirements.txt",
+                    false,
+                    &e.to_string(),
+                );
+            } else {
+                push(
+                    summary,
+                    "uv pip freeze > requirements.txt",
+                    true,
+                    "requirements.txt updated with exact pins",
+                );
+            }
+        }
+        Ok(out) => push(
+            summary,
+            "uv pip freeze > requirements.txt",
+            false,
+            out.stderr.trim(),
+        ),
+        Err(e) => push(
+            summary,
+            "uv pip freeze > requirements.txt",
+            false,
+            &e.to_string(),
+        ),
+    }
+}
+
 /// Guard used by the CLI surface: refuse an empty package name rather than
 /// shelling out with one.
 pub fn validate_package_name(name: &str) -> crate::Result<()> {
@@ -426,6 +590,7 @@ pub fn validate_package_name(name: &str) -> crate::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::PackageManager;
 
     #[test]
     fn rejects_names_that_would_become_flags() {
@@ -444,6 +609,7 @@ mod tests {
 
         let mut summary = SetupSummary {
             package_manager: PackageManager::Uv,
+            resolved_mode: ResolvedMode::UvFull,
             python: None,
             venv_path: dir.join(".venv"),
             why: String::new(),

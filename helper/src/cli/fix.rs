@@ -7,7 +7,7 @@ use crate::core::{install, project, solver, uv};
 use crate::matrix::frameworks::Framework;
 use crate::matrix::solve::solve_framework;
 use crate::pypi::MetadataSource;
-use crate::settings::{PackageManager, Settings};
+use crate::settings::{ResolvedMode, Settings};
 
 pub async fn run<S: MetadataSource>(
     workspace: &Path,
@@ -18,24 +18,21 @@ pub async fn run<S: MetadataSource>(
     match what {
         "python" => fix_python(workspace, settings, source).await,
         "cuda" => fix_cuda(workspace, settings).await,
-        other => anyhow::bail!(
-            "unknown target `{other}`. Try `pypilot fix python` or `pypilot fix cuda`."
-        ),
+        other => anyhow::bail!("unknown fix target `{other}` (expected `python` or `cuda`)"),
     }
 }
 
 async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
-    let deps = project::scan(workspace);
-    let frameworks: Vec<_> = deps
+    let project = project::scan(workspace);
+    let frameworks: Vec<_> = project
         .packages
         .iter()
-        .filter(|r| Framework::from_package_name(&r.name).is_some())
+        .filter(|p| Framework::from_package_name(&p.name).is_some())
         .collect();
 
     if frameworks.is_empty() {
-        anyhow::bail!(
-            "no torch or tensorflow dependency declared here, so there is nothing to re-pin"
-        );
+        println!("pypilot: no framework packages (torch, tensorflow) found in project.");
+        return Ok(());
     }
 
     let mut any_failed = false;
@@ -52,8 +49,8 @@ async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
         };
         let spec = format!("{}=={version}", req.name);
 
-        match settings.package_manager {
-            PackageManager::Uv => {
+        match settings.resolve_mode().await {
+            ResolvedMode::UvFull | ResolvedMode::UvPipCompat => {
                 let uv_info = uv::ensure(settings).await?;
                 let out = uv::pip_install(
                     &uv_info,
@@ -69,7 +66,7 @@ async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
                     println!("  failed {}", out.stderr.trim());
                 }
             }
-            PackageManager::Pip => {
+            ResolvedMode::PurePip => {
                 let venv = workspace.join(".venv");
                 if !venv.is_dir() {
                     any_failed = true;

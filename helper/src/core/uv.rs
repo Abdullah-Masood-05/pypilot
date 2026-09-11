@@ -34,25 +34,8 @@ fn managed_uv_path() -> PathBuf {
     platform::data_dir().join("uv").join(name)
 }
 
-/// Detect an available uv, without downloading. Returns `None` in pip mode.
-pub async fn detect(settings: &Settings) -> Option<UvInfo> {
-    if settings.package_manager == PackageManager::Pip {
-        return None;
-    }
-
-    // Prefer the managed copy (known-good, verified on install).
-    let managed = managed_uv_path();
-    if managed.is_file() {
-        if let Some(version) = command::probe_version(&managed, &["--version"]).await {
-            return Some(UvInfo {
-                path: managed,
-                version: clean_version(&version),
-                managed: true,
-            });
-        }
-    }
-
-    // Otherwise a uv on PATH.
+/// Check if uv is installed on the system PATH or standard install paths (ignoring any managed copy).
+pub async fn is_system_installed() -> Option<UvInfo> {
     if let Some(version) = command::probe_version("uv", &["--version"]).await {
         return Some(UvInfo {
             path: PathBuf::from("uv"),
@@ -61,19 +44,143 @@ pub async fn detect(settings: &Settings) -> Option<UvInfo> {
         });
     }
 
+    // Check standard global install locations in case the current process environment has a stale PATH.
+    if let Some(base) = directories::BaseDirs::new() {
+        let bin_name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        let candidates = [
+            base.home_dir().join(".local").join("bin").join(bin_name),
+            base.home_dir().join(".cargo").join("bin").join(bin_name),
+        ];
+        for candidate in candidates {
+            if candidate.is_file() {
+                if let Some(version) = command::probe_version(&candidate, &["--version"]).await {
+                    return Some(UvInfo {
+                        path: candidate,
+                        version: clean_version(&version),
+                        managed: false,
+                    });
+                }
+            }
+        }
+    }
+
     None
 }
 
-/// Ensure a usable uv exists, downloading the managed copy if necessary.
-/// Errors in pip mode — callers must branch on `package_manager` first.
-pub async fn ensure(settings: &Settings) -> crate::Result<UvInfo> {
-    if settings.package_manager == PackageManager::Pip {
-        bail!("uv is disabled in pip mode (package_manager = \"pip\")");
-    }
-    if let Some(info) = detect(settings).await {
+/// Install uv globally using the official astral-sh installer.
+pub async fn install_globally() -> crate::Result<UvInfo> {
+    if let Some(info) = is_system_installed().await {
         return Ok(info);
     }
-    download_managed(Platform::current()).await
+
+    let out = if cfg!(windows) {
+        command::run(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "irm https://astral.sh/uv/install.ps1 | iex",
+            ],
+            None,
+        )
+        .await?
+    } else {
+        command::run(
+            "sh",
+            &["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
+            None,
+        )
+        .await?
+    };
+
+    if !out.success() {
+        bail!("uv global installer failed: {}", out.stderr.trim());
+    }
+
+    // Prepend ~/.local/bin to current process PATH so that subsequent command calls find uv.
+    if let Some(base) = directories::BaseDirs::new() {
+        let local_bin = base.home_dir().join(".local").join("bin");
+        if local_bin.is_dir() {
+            if let Ok(current_path) = std::env::var("PATH") {
+                let sep = if cfg!(windows) { ";" } else { ":" };
+                std::env::set_var(
+                    "PATH",
+                    format!("{}{sep}{current_path}", local_bin.display()),
+                );
+            }
+        }
+    }
+
+    if let Some(info) = is_system_installed().await {
+        Ok(info)
+    } else {
+        bail!(
+            "uv was installed globally, but could not be verified on PATH or standard directories"
+        );
+    }
+}
+
+/// Command to refresh PATH in an existing shell session.
+pub fn refresh_path_command() -> &'static str {
+    if cfg!(windows) {
+        "$env:Path = [System.Environment]::GetEnvironmentVariable(\"Path\",\"Machine\") + \";\" + [System.Environment]::GetEnvironmentVariable(\"Path\",\"User\")"
+    } else {
+        "export PATH=\"$HOME/.local/bin:$PATH\""
+    }
+}
+
+/// Detect an available uv, without downloading.
+///
+/// In `Pip` mode, returns `None`.
+/// In `Auto` mode, checks system PATH / standard locations only (never uses managed copy).
+/// In `Uv` or `UvPip` mode, checks system first, then falls back to the managed copy.
+pub async fn detect(settings: &Settings) -> Option<UvInfo> {
+    match settings.package_manager {
+        PackageManager::Pip => None,
+        PackageManager::Auto => is_system_installed().await,
+        PackageManager::Uv | PackageManager::UvPip => {
+            if let Some(info) = is_system_installed().await {
+                return Some(info);
+            }
+            let managed = managed_uv_path();
+            if managed.is_file() {
+                if let Some(version) = command::probe_version(&managed, &["--version"]).await {
+                    return Some(UvInfo {
+                        path: managed,
+                        version: clean_version(&version),
+                        managed: true,
+                    });
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Ensure a usable uv exists.
+///
+/// In `Pip` mode: errors because uv is disabled.
+/// In `Auto` mode: returns system uv if installed; errors if missing (never auto-downloads).
+/// In `Uv` / `UvPip` mode: uses existing uv if detected, otherwise downloads the managed copy.
+pub async fn ensure(settings: &Settings) -> crate::Result<UvInfo> {
+    match settings.package_manager {
+        PackageManager::Pip => bail!("uv is disabled in pip mode (package_manager = \"pip\")"),
+        PackageManager::Auto => {
+            if let Some(info) = is_system_installed().await {
+                Ok(info)
+            } else {
+                bail!("uv is not installed on system PATH");
+            }
+        }
+        PackageManager::Uv | PackageManager::UvPip => {
+            if let Some(info) = detect(settings).await {
+                return Ok(info);
+            }
+            download_managed(Platform::current()).await
+        }
+    }
 }
 
 /// Download, extract, and verify the standalone uv for `platform`.
@@ -288,6 +395,11 @@ pub async fn pip_install_requirements(
 ) -> crate::Result<Output> {
     let req = requirements.to_string_lossy().into_owned();
     command::run(&uv.path, &["pip", "install", "-r", &req], Some(cwd)).await
+}
+
+/// `uv pip freeze` — snapshot installed packages into requirements format.
+pub async fn pip_freeze(uv: &UvInfo, cwd: &Path) -> crate::Result<Output> {
+    command::run(&uv.path, &["pip", "freeze"], Some(cwd)).await
 }
 
 /// `uv pip install --dry-run --system --python <X.Y> <pkgs...>` — fast
@@ -528,5 +640,16 @@ mod tests {
         };
         assert!(detect(&s).await.is_none());
         assert!(ensure(&s).await.is_err());
+    }
+
+    #[test]
+    fn refresh_path_command_is_non_empty() {
+        let cmd = refresh_path_command();
+        assert!(!cmd.is_empty());
+        if cfg!(windows) {
+            assert!(cmd.contains("GetEnvironmentVariable"));
+        } else {
+            assert!(cmd.contains("PATH="));
+        }
     }
 }

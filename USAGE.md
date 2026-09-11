@@ -45,7 +45,7 @@ yourself (pin one package differently, drop one, etc.).
 
 | Situation | Severity | What you see | Auto-fix? |
 |---|---|---|---|
-| No venv yet, versions agree | Warning | "No environment set up yet" + recommended version | Yes — "Fix everything" |
+| No venv yet, versions agree | Warning | "No environment set up yet" + recommended version | Yes — "Fix environment" |
 | Venv exists, wrong Python | Error | "Python X.Y is not supported by this project" + which package(s) block it | Yes — "Recreate with Python X.Y" |
 | Venv exists, right Python | — | Nothing. Silent on purpose. | — |
 | Dependencies conflict (empty intersection) | Error | Both blocking packages named, each one's supported range | No — manual |
@@ -89,7 +89,7 @@ any time:
 - Run **`pypilot: show details (doctor report)`** from `task: spawn` for a
   full read-only report — same information the toast would have shown,
   without needing the toast to still be on screen.
-- Run **`pypilot: fix everything (set up environment)`** to apply whatever
+- Run **`pypilot: fix environment (set up environment)`** to apply whatever
   the current assessment recommends, whether or not you saw the original
   notification.
 - The diagnostics/squiggles on your buffers aren't a notification at all;
@@ -112,7 +112,7 @@ NVIDIA GPU (`nvidia-smi`), it reads the driver version, maps it to the
 newest CUDA runtime that driver supports, and picks the matching build
 (`cu121`, `cu124`, etc.) so the install pulls the right wheel instead of
 whatever the default index would hand back. This applies automatically on
-`pypilot setup` / `pypilot install` / the "Fix everything" button; you don't
+`pypilot setup` / `pypilot install` / the "Fix environment" button; you don't
 choose the build yourself. If your driver is too old for any build the
 declared framework version ships, that's surfaced as a finding naming the
 gap. Apple Silicon gets a note that you're on the MPS backend, not CUDA. No
@@ -139,14 +139,14 @@ global Zed `tasks.json` first.
 
 | Task | Does |
 |---|---|
-| `pypilot: fix everything (set up environment)` | Build/rebuild the environment on the recommended Python |
+| `pypilot: fix environment (set up environment)` | Build/rebuild the environment on the recommended Python |
 | `pypilot: show details (doctor report)` | Read-only report, changes nothing |
 | `pypilot: fix python version` | Rebuild the environment on the right version specifically |
 | `pypilot: fix cuda (re-pin torch/tensorflow to the driver)` | Reinstall those two packages against the matched CUDA build |
 | `pypilot: update data (refresh bundled tables)` | Force-refresh driver/framework/import tables from this repo |
 | `pypilot: migrate conda to pyproject.toml` | One-shot conda → pyproject.toml translation |
 
-The toast's "Fix everything" button and the task of the same name call the
+The toast's "Fix environment" button and the task of the same name call the
 identical function, so they can't drift apart.
 
 ## Settings

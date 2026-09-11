@@ -16,14 +16,34 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Which package manager drives installs. `pip` mode never downloads or invokes uv.
+/// Which package manager drives installs.
+///
+/// - `auto` (default): Checks whether uv is installed on the system PATH. If so, uses full uv project workflow.
+///   If not, falls back to the standard pip ecosystem rather than silently using a managed uv binary.
+/// - `uv`: Full uv project mode (pyproject.toml + uv.lock).
+/// - `uv-pip`: uv-accelerated pip-compatible mode (requirements.txt only, using uv venv and uv pip install).
+/// - `pip`: Standard python -m venv + pip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum PackageManager {
     #[default]
+    Auto,
     Uv,
+    #[serde(rename = "uv-pip")]
+    UvPip,
     Pip,
+}
+
+/// Resolved operational mode for PyPilot operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResolvedMode {
+    /// Full uv project mode (pyproject.toml + uv.lock + uv init/add/sync).
+    UvFull,
+    /// uv-accelerated pip-compatible mode (requirements.txt only, uv venv + uv pip install + uv pip freeze).
+    UvPipCompat,
+    /// Pure pip ecosystem (python -m venv + pip install + pip freeze).
+    PurePip,
 }
 
 /// F5 toast verbosity.
@@ -114,6 +134,41 @@ impl Settings {
         std::fs::write(&path, text)?;
         Ok(())
     }
+
+    /// Resolve the operational mode for this settings instance.
+    pub async fn resolve_mode(&self) -> ResolvedMode {
+        resolve_mode(self).await
+    }
+
+    /// Persist the chosen package manager into `<workspace>/.zed/pypilot.toml`,
+    /// preserving any settings already there.
+    pub fn persist_package_manager(workspace: &Path, pm: PackageManager) -> crate::Result<()> {
+        let dir = workspace.join(".zed");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("pypilot.toml");
+
+        let mut raw = read_raw(&path).unwrap_or_default();
+        raw.package_manager = Some(pm);
+        let text = toml::to_string_pretty(&raw)?;
+        std::fs::write(&path, text)?;
+        Ok(())
+    }
+}
+
+/// Resolve the operational mode from settings, checking system uv for Auto mode.
+pub async fn resolve_mode(settings: &Settings) -> ResolvedMode {
+    match settings.package_manager {
+        PackageManager::Uv => ResolvedMode::UvFull,
+        PackageManager::UvPip => ResolvedMode::UvPipCompat,
+        PackageManager::Pip => ResolvedMode::PurePip,
+        PackageManager::Auto => {
+            if crate::core::uv::is_system_installed().await.is_some() {
+                ResolvedMode::UvFull
+            } else {
+                ResolvedMode::PurePip
+            }
+        }
+    }
 }
 
 /// Path to the global config file, e.g. `~/.config/pypilot/config.toml`.
@@ -173,11 +228,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_uv_first() {
+    fn defaults_are_auto() {
         let s = Settings::default();
-        assert_eq!(s.package_manager, PackageManager::Uv);
+        assert_eq!(s.package_manager, PackageManager::Auto);
         assert_eq!(s.notifications, Notifications::ProblemsOnly);
         assert!(!s.dismissed);
+    }
+
+    #[tokio::test]
+    async fn resolve_mode_explicit_pip() {
+        let s = Settings {
+            package_manager: PackageManager::Pip,
+            ..Settings::default()
+        };
+        assert_eq!(s.resolve_mode().await, ResolvedMode::PurePip);
+    }
+
+    #[tokio::test]
+    async fn resolve_mode_explicit_uv() {
+        let s = Settings {
+            package_manager: PackageManager::Uv,
+            ..Settings::default()
+        };
+        assert_eq!(s.resolve_mode().await, ResolvedMode::UvFull);
+    }
+
+    #[tokio::test]
+    async fn resolve_mode_explicit_uv_pip() {
+        let s = Settings {
+            package_manager: PackageManager::UvPip,
+            ..Settings::default()
+        };
+        assert_eq!(s.resolve_mode().await, ResolvedMode::UvPipCompat);
     }
 
     #[test]
