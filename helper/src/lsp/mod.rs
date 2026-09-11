@@ -42,7 +42,7 @@ const CMD_FIX: &str = "pypilot.fixEverything";
 const CMD_DETAILS: &str = "pypilot.showDetails";
 const CMD_IGNORE: &str = "pypilot.ignore";
 const CMD_NEVER: &str = "pypilot.neverForProject";
-const CMD_INSTALL_UV: &str = "pypilot.installUv";
+const CMD_INSTALL_UV: &str = "pypilot.installUvGlobally";
 
 // Notification button labels.
 const BTN_FIX: &str = "Fix environment";
@@ -207,7 +207,7 @@ impl LanguageServer for Backend {
                 run_recreate(self.shared.clone(), &root, &python, &package).await;
             }
 
-            CMD_INSTALL_UV => run_install_uv(client).await,
+            CMD_INSTALL_UV | "pypilot.installUv" => run_install_uv(client).await,
 
             other => {
                 client
