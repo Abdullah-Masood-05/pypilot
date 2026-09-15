@@ -49,6 +49,7 @@ futures = "0.3"
 anyhow = "1"
 thiserror = "2"
 directories = "5"
+colored = "3.1.1"
 
 [dev-dependencies]
 # Tests are fully offline; fixtures are recorded PyPI JSON responses.

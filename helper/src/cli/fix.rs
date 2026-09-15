@@ -2,6 +2,7 @@
 //! `pypilot fix cuda`: re-pin torch/tensorflow to the build matching the driver.
 
 use std::path::Path;
+use colored::Colorize;
 
 use crate::core::{install, project, solver, uv};
 use crate::matrix::frameworks::Framework;
@@ -31,7 +32,7 @@ async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
         .collect();
 
     if frameworks.is_empty() {
-        println!("pypilot: no framework packages (torch, tensorflow) found in project.");
+        println!("  {} no framework packages (torch, tensorflow) found in project.", "[INFO ]".cyan().bold());
         return Ok(());
     }
 
@@ -41,7 +42,7 @@ async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
             continue;
         };
         if let Some(finding) = &solved.finding {
-            println!("{}\n  {}\n", finding.title, finding.detail);
+            println!("{}\n  {}\n", finding.title.bold(), finding.detail.dimmed());
         }
 
         let Some(version) = &solved.resolved_version else {
@@ -60,17 +61,17 @@ async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
                 )
                 .await?;
                 if out.success() {
-                    println!("  ok installed {spec}");
+                    println!("  {} installed {}", "✓".green().bold(), spec.bold());
                 } else {
                     any_failed = true;
-                    println!("  failed {}", out.stderr.trim());
+                    println!("  {} failed {}", "✗".red().bold(), out.stderr.trim().red());
                 }
             }
             ResolvedMode::PurePip => {
                 let venv = workspace.join(".venv");
                 if !venv.is_dir() {
                     any_failed = true;
-                    println!("  failed no .venv in this project; run setup first");
+                    println!("  {} no .venv in this project; run setup first", "✗ failed".red().bold());
                     continue;
                 }
                 let out = crate::core::pip::install_packages(
@@ -81,10 +82,10 @@ async fn fix_cuda(workspace: &Path, settings: &Settings) -> crate::Result<()> {
                 )
                 .await?;
                 if out.success() {
-                    println!("  ok installed {spec}");
+                    println!("  {} installed {}", "✓".green().bold(), spec.bold());
                 } else {
                     any_failed = true;
-                    println!("  failed {}", out.stderr.trim());
+                    println!("  {} failed {}", "✗".red().bold(), out.stderr.trim().red());
                 }
             }
         }
@@ -120,7 +121,7 @@ async fn fix_python<S: MetadataSource>(
 
     let current = assessment.probes.venv.as_ref().and_then(|v| v.python);
     if current == Some(target) {
-        println!("Already on Python {target}. Nothing to do.");
+        println!("  {} Already on Python {target}. Nothing to do.", "✓".green().bold());
         return Ok(());
     }
 
@@ -132,27 +133,30 @@ async fn fix_python<S: MetadataSource>(
         .unwrap_or(0);
 
     println!(
-        "Rebuilding on Python {target}. Dependencies support {}.",
-        compat.intersection.to_range_string()
+        "{} — Rebuilding on Python {}. Dependencies support {}.",
+        "PyPilot fix".bold().cyan(),
+        format!("{target}").cyan().bold(),
+        compat.intersection.to_range_string().green().bold()
     );
     if installed_count > 0 {
-        println!("{installed_count} installed packages will be reinstalled.");
+        println!("  {} {installed_count} installed packages will be reinstalled.", "•".dimmed());
     }
+    println!("{}", "── Steps ────────────────────────────────────────────────".bold().blue());
 
     // Rebuild and restore the declared dependencies. There is no single new
     // package here, so reuse the bootstrap rather than the add path.
     let summary = crate::core::setup::run(workspace, settings, source).await?;
     for step in &summary.steps {
+        let mark = if step.ok { "✓".green().bold() } else { "✗".red().bold() };
         println!(
-            "  {} {} {}",
-            if step.ok { "ok" } else { "failed" },
-            step.name,
-            step.detail
+            "  {mark} {:<24} — {}",
+            step.name.bold(),
+            step.detail.dimmed()
         );
     }
 
     if summary.ok {
-        println!("\nEnvironment now runs Python {target}.");
+        println!("\n  {} Environment now runs Python {}.", "✓ Done.".green().bold(), target.to_string().cyan().bold());
         Ok(())
     } else {
         anyhow::bail!("the rebuild did not finish, see the steps above")
@@ -166,18 +170,26 @@ pub async fn install_one(
     package: &str,
 ) -> crate::Result<()> {
     install::validate_package_name(package)?;
+    println!(
+        "{} Installing {}...",
+        "PyPilot install —".bold().cyan(),
+        package.bold()
+    );
+    println!("{}", "── Steps ────────────────────────────────────────────────".bold().blue());
     let summary = install::install_package(workspace, settings, package).await?;
     for step in &summary.steps {
+        let mark = if step.ok { "✓".green().bold() } else { "✗".red().bold() };
         println!(
-            "  {} {} {}",
-            if step.ok { "ok" } else { "failed" },
-            step.name,
-            step.detail
+            "  {mark} {:<24} — {}",
+            step.name.bold(),
+            step.detail.dimmed()
         );
     }
     if summary.ok {
+        println!("\n  {} Successfully installed {}.", "✓ Done.".green().bold(), package.bold());
         Ok(())
     } else {
         anyhow::bail!("install did not finish")
     }
 }
+

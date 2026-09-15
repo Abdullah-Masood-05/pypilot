@@ -1,6 +1,7 @@
 //! `pypilot setup` — full F1 bootstrap. Same engine as the LSP "Fix everything".
 
 use std::path::Path;
+use colored::Colorize;
 
 use crate::core::setup;
 use crate::pypi::MetadataSource;
@@ -12,21 +13,30 @@ pub async fn run<S: MetadataSource>(
     source: &S,
 ) -> crate::Result<()> {
     println!(
-        "PyPilot setup — {} ({:?} mode)",
-        workspace.display(),
-        settings.package_manager
+        "{} — {} ({})",
+        "PyPilot setup".bold().cyan(),
+        workspace.display().to_string().dimmed(),
+        format!("{:?} mode", settings.package_manager).bold()
     );
 
     let summary = setup::run(workspace, settings, source).await?;
 
     if !summary.why.is_empty() {
-        println!("{}", summary.why);
+        println!("  {}", summary.why.cyan());
     }
-    println!();
+    println!("{}", "── Steps ────────────────────────────────────────────────".bold().blue());
 
     for step in &summary.steps {
-        let mark = if step.ok { "✓" } else { "✗" };
-        println!("  {mark} {} — {}", step.name, truncate(&step.detail, 300));
+        let mark = if step.ok {
+            "✓".green().bold()
+        } else {
+            "✗".red().bold()
+        };
+        println!(
+            "  {mark} {:<24} — {}",
+            step.name.bold(),
+            truncate(&step.detail, 300).dimmed()
+        );
     }
     println!();
 
@@ -36,12 +46,13 @@ pub async fn run<S: MetadataSource>(
 
     if summary.ok {
         println!(
-            "Done. Environment at {} ({}).",
+            "  {} Environment at {} ({}).",
+            "✓ Done.".green().bold(),
             summary.venv_path.display(),
             summary
                 .python
-                .map(|p| format!("Python {p}"))
-                .unwrap_or_else(|| "system interpreter".into())
+                .map(|p| format!("Python {p}").cyan().bold().to_string())
+                .unwrap_or_else(|| "system interpreter".dimmed().to_string())
         );
         Ok(())
     } else {
@@ -58,3 +69,4 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{cut}…")
     }
 }
+

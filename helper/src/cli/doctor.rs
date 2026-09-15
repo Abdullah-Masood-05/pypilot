@@ -1,6 +1,7 @@
 //! `pypilot doctor` — read-only probe + compatibility report. Executes nothing.
 
 use std::path::Path;
+use colored::Colorize;
 
 use crate::core::solver;
 use crate::core::Severity;
@@ -14,48 +15,59 @@ pub async fn run<S: MetadataSource>(
 ) -> crate::Result<()> {
     let a = solver::assess(workspace, settings, source).await;
 
-    println!("PyPilot doctor — {}", workspace.display());
-    println!("  package manager : {:?}", settings.package_manager);
+    println!(
+        "{} — {}",
+        "PyPilot doctor".bold().cyan(),
+        workspace.display().to_string().dimmed()
+    );
+    println!(
+        "  {:<16}: {}",
+        "package manager".dimmed(),
+        format!("{:?}", settings.package_manager).bold()
+    );
     println!();
 
     // --- Environment probes ---
-    println!("Environment");
+    println!("{}", "── Environment ──────────────────────────────────────────".bold().blue());
     match &a.probes.uv {
         Some(uv) => println!(
-            "  uv              : present (v{}, {})",
-            uv.version,
-            if uv.managed { "managed" } else { "on PATH" }
+            "  {:<16}: {} ({}, {})",
+            "uv".dimmed(),
+            "present".green().bold(),
+            format!("v{}", uv.version).cyan(),
+            if uv.managed { "managed".dimmed() } else { "on PATH".dimmed() }
         ),
-        None => println!("  uv              : not detected"),
+        None => println!("  {:<16}: {}", "uv".dimmed(), "not detected".yellow()),
     }
     match &a.probes.venv {
         Some(v) => println!(
-            "  virtualenv      : {} (Python {})",
+            "  {:<16}: {} ({})",
+            "virtualenv".dimmed(),
             v.path.display(),
             v.python
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "unknown".into())
+                .map(|p| format!("Python {p}").green().bold().to_string())
+                .unwrap_or_else(|| "unknown".dimmed().to_string())
         ),
-        None => println!("  virtualenv      : none"),
+        None => println!("  {:<16}: {}", "virtualenv".dimmed(), "none".yellow()),
     }
     if a.probes.interpreters.is_empty() {
-        println!("  interpreters    : none found");
+        println!("  {:<16}: {}", "interpreters".dimmed(), "none found".yellow());
     } else {
         let list = a
             .probes
             .interpreters
             .iter()
-            .map(|i| format!("{} ({})", i.version, i.command))
+            .map(|i| format!("{} ({})", i.version.to_string().cyan().bold(), i.command.dimmed()))
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  interpreters    : {list}");
+        println!("  {:<16}: {list}", "interpreters".dimmed());
     }
     println!();
 
     // --- Project ---
-    println!("Project");
+    println!("{}", "── Project ──────────────────────────────────────────────".bold().blue());
     if a.project.sources.is_empty() {
-        println!("  (no Python project files detected)");
+        println!("  {}", "(no Python project files detected)".dimmed());
     } else {
         let files = a
             .project
@@ -63,63 +75,83 @@ pub async fn run<S: MetadataSource>(
             .iter()
             .map(|p| {
                 p.file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
+                    .map(|f| f.to_string_lossy().bold().to_string())
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  files           : {files}");
+        println!("  {:<16}: {files}", "files".dimmed());
         if let Some(rp) = &a.project.declared_requires_python {
-            println!("  requires-python : {rp}");
+            println!(
+                "  {:<16}: {}",
+                "requires-python".dimmed(),
+                rp.to_string().green().bold()
+            );
         }
         let deps = a
             .project
             .packages
             .iter()
-            .map(|r| r.to_string())
+            .map(|r| r.to_string().bold().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  dependencies    : {deps}");
+        println!("  {:<16}: {deps}", "dependencies".dimmed());
     }
     println!();
 
     // --- Compatibility ---
     if let Some(compat) = &a.compat {
-        println!("Compatibility");
+        println!("{}", "── Compatibility ────────────────────────────────────────".bold().blue());
         println!(
-            "  supported Python: {}",
-            compat.intersection.to_range_string()
+            "  {:<16}: {}",
+            "supported Python".dimmed(),
+            compat.intersection.to_range_string().green().bold()
         );
         if let Some(t) = a.target_python {
-            println!("  recommended     : Python {t}");
+            println!(
+                "  {:<16}: {}",
+                "recommended".dimmed(),
+                format!("Python {t}").cyan().bold()
+            );
         }
         for p in &compat.per_package {
+            let sdist_note = if p.sdist_only {
+                " (sdist only)".yellow().to_string()
+            } else {
+                "".to_string()
+            };
             println!(
-                "    - {:<20} {}{}",
-                p.name,
-                p.supported.to_range_string(),
-                if p.sdist_only { "  (sdist only)" } else { "" }
+                "    {} {:<20} {}{}",
+                "•".dimmed(),
+                p.name.bold(),
+                p.supported.to_range_string().green(),
+                sdist_note
             );
         }
         for (name, err) in &compat.unresolved {
-            println!("    - {name:<20} unresolved ({err})");
+            println!(
+                "    {} {:<20} {}",
+                "•".dimmed(),
+                name.bold(),
+                format!("unresolved ({err})").red().bold()
+            );
         }
         println!();
     }
 
     // --- Findings ---
+    println!("{}", "── Findings ─────────────────────────────────────────────".bold().blue());
     if a.findings.is_empty() {
-        println!("✓ Everything looks good.");
+        println!("  {} Everything looks good.", "✓".green().bold());
     } else {
-        println!("Findings");
         for f in &a.findings {
             let tag = match f.severity {
-                Severity::Error => "ERROR",
-                Severity::Warning => "WARN ",
-                Severity::Info => "INFO ",
+                Severity::Error => "[ERROR]".red().bold(),
+                Severity::Warning => "[WARN ]".yellow().bold(),
+                Severity::Info => "[INFO ]".cyan().bold(),
             };
-            println!("  [{tag}] {}", f.title);
-            println!("          {}", f.detail);
+            println!("  {tag} {}", f.title.bold());
+            println!("          {}", f.detail.dimmed());
         }
     }
 
@@ -129,3 +161,4 @@ pub async fn run<S: MetadataSource>(
 
     Ok(())
 }
+

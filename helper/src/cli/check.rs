@@ -4,6 +4,7 @@
 //! install fails.
 
 use std::path::Path;
+use colored::Colorize;
 
 use crate::core::platform::Platform;
 use crate::core::{installed, probe};
@@ -24,30 +25,53 @@ pub async fn run<S: MetadataSource>(
     let analysis = meta.analyze(&Platform::current());
     let probes = probe::run(workspace, settings).await;
 
-    println!("{} {}", analysis.name, analysis.version);
     println!(
-        "  supported Python : {}",
-        analysis.supported.to_range_string()
+        "{} {} ({})",
+        "PyPilot check —".bold().cyan(),
+        analysis.name.bold(),
+        format!("v{}", analysis.version).cyan()
+    );
+    println!("{}", "── Package Details ──────────────────────────────────────".bold().blue());
+    println!(
+        "  {:<18}: {}",
+        "supported Python".dimmed(),
+        analysis.supported.to_range_string().green().bold()
     );
     if let Some(rp) = &analysis.requires_python {
-        println!("  requires_python  : {rp}");
+        println!(
+            "  {:<18}: {}",
+            "requires-python".dimmed(),
+            rp.to_string().green()
+        );
     }
     if analysis.sdist_only {
-        println!("  wheels           : none for this platform, so it compiles from source");
+        println!(
+            "  {:<18}: {}",
+            "wheels".dimmed(),
+            "none for this platform, will compile from source".yellow()
+        );
     }
 
     let venv = workspace.join(".venv");
     let present = installed::scan(&venv).contains(&analysis.name);
     println!(
-        "  installed        : {}",
-        if present { "yes" } else { "no" }
+        "  {:<18}: {}",
+        "installed".dimmed(),
+        if present {
+            "yes".green().bold().to_string()
+        } else {
+            "no".yellow().to_string()
+        }
     );
 
+    println!("{}", "── Verdict ──────────────────────────────────────────────".bold().blue());
     match probes.venv.as_ref().and_then(|v| v.python) {
         Some(current) if analysis.supported.contains(current) => {
             println!(
-                "\nThis project's Python {current} can run {}.",
-                analysis.name
+                "  {} This project's Python {} can run {}.",
+                "✓".green().bold(),
+                current.to_string().cyan().bold(),
+                analysis.name.bold()
             );
         }
         Some(current) => {
@@ -57,8 +81,11 @@ pub async fn run<S: MetadataSource>(
                 .map(|t| format!(" Use Python {t} instead."))
                 .unwrap_or_default();
             println!(
-                "\n{} does not support this project's Python {current}.{suggestion}",
-                analysis.name
+                "  {} {} does not support this project's Python {}.{}",
+                "[ERROR]".red().bold(),
+                analysis.name.bold(),
+                current.to_string().yellow().bold(),
+                suggestion.cyan()
             );
         }
         None => {
@@ -67,9 +94,14 @@ pub async fn run<S: MetadataSource>(
                 .max()
                 .map(|t| format!(" Python {t} would suit it."))
                 .unwrap_or_default();
-            println!("\nThis project has no virtual environment yet.{suggestion}");
+            println!(
+                "  {} This project has no virtual environment yet.{}",
+                "[INFO ]".cyan().bold(),
+                suggestion.cyan()
+            );
         }
     }
 
     Ok(())
 }
+
