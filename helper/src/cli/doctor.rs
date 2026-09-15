@@ -1,6 +1,7 @@
 //! `pypilot doctor` — read-only probe + compatibility report. Executes nothing.
 
 use std::path::Path;
+
 use colored::Colorize;
 
 use crate::core::solver;
@@ -18,56 +19,66 @@ pub async fn run<S: MetadataSource>(
     println!(
         "{} — {}",
         "PyPilot doctor".bold().cyan(),
-        workspace.display().to_string().dimmed()
+        workspace.display()
     );
     println!(
         "  {:<16}: {}",
-        "package manager".dimmed(),
+        "package manager",
         format!("{:?}", settings.package_manager).bold()
     );
     println!();
 
     // --- Environment probes ---
-    println!("{}", "── Environment ──────────────────────────────────────────".bold().blue());
+    println!(
+        "{}",
+        "── Environment ──────────────────────────────────────────"
+            .bold()
+            .cyan()
+    );
     match &a.probes.uv {
         Some(uv) => println!(
             "  {:<16}: {} ({}, {})",
-            "uv".dimmed(),
+            "uv",
             "present".green().bold(),
-            format!("v{}", uv.version).cyan(),
-            if uv.managed { "managed".dimmed() } else { "on PATH".dimmed() }
+            format!("v{}", uv.version).cyan().bold(),
+            if uv.managed { "managed" } else { "on PATH" }
         ),
-        None => println!("  {:<16}: {}", "uv".dimmed(), "not detected".yellow()),
+        None => println!("  {:<16}: {}", "uv", "not detected".yellow()),
     }
     match &a.probes.venv {
         Some(v) => println!(
             "  {:<16}: {} ({})",
-            "virtualenv".dimmed(),
+            "virtualenv",
             v.path.display(),
             v.python
                 .map(|p| format!("Python {p}").green().bold().to_string())
-                .unwrap_or_else(|| "unknown".dimmed().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
         ),
-        None => println!("  {:<16}: {}", "virtualenv".dimmed(), "none".yellow()),
+        None => println!("  {:<16}: {}", "virtualenv", "none".yellow()),
     }
     if a.probes.interpreters.is_empty() {
-        println!("  {:<16}: {}", "interpreters".dimmed(), "none found".yellow());
+        println!("  {:<16}: {}", "interpreters", "none found".yellow());
     } else {
         let list = a
             .probes
             .interpreters
             .iter()
-            .map(|i| format!("{} ({})", i.version.to_string().cyan().bold(), i.command.dimmed()))
+            .map(|i| format!("{} ({})", i.version.to_string().cyan().bold(), i.command))
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  {:<16}: {list}", "interpreters".dimmed());
+        println!("  {:<16}: {list}", "interpreters");
     }
     println!();
 
     // --- Project ---
-    println!("{}", "── Project ──────────────────────────────────────────────".bold().blue());
+    println!(
+        "{}",
+        "── Project ──────────────────────────────────────────────"
+            .bold()
+            .cyan()
+    );
     if a.project.sources.is_empty() {
-        println!("  {}", "(no Python project files detected)".dimmed());
+        println!("  (no Python project files detected)");
     } else {
         let files = a
             .project
@@ -80,11 +91,11 @@ pub async fn run<S: MetadataSource>(
             })
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  {:<16}: {files}", "files".dimmed());
+        println!("  {:<16}: {files}", "files");
         if let Some(rp) = &a.project.declared_requires_python {
             println!(
                 "  {:<16}: {}",
-                "requires-python".dimmed(),
+                "requires-python",
                 rp.to_string().green().bold()
             );
         }
@@ -95,22 +106,27 @@ pub async fn run<S: MetadataSource>(
             .map(|r| r.to_string().bold().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  {:<16}: {deps}", "dependencies".dimmed());
+        println!("  {:<16}: {deps}", "dependencies");
     }
     println!();
 
     // --- Compatibility ---
     if let Some(compat) = &a.compat {
-        println!("{}", "── Compatibility ────────────────────────────────────────".bold().blue());
+        println!(
+            "{}",
+            "── Compatibility ────────────────────────────────────────"
+                .bold()
+                .cyan()
+        );
         println!(
             "  {:<16}: {}",
-            "supported Python".dimmed(),
+            "supported Python",
             compat.intersection.to_range_string().green().bold()
         );
         if let Some(t) = a.target_python {
             println!(
                 "  {:<16}: {}",
-                "recommended".dimmed(),
+                "recommended",
                 format!("Python {t}").cyan().bold()
             );
         }
@@ -122,7 +138,7 @@ pub async fn run<S: MetadataSource>(
             };
             println!(
                 "    {} {:<20} {}{}",
-                "•".dimmed(),
+                "•".cyan(),
                 p.name.bold(),
                 p.supported.to_range_string().green(),
                 sdist_note
@@ -131,7 +147,7 @@ pub async fn run<S: MetadataSource>(
         for (name, err) in &compat.unresolved {
             println!(
                 "    {} {:<20} {}",
-                "•".dimmed(),
+                "•".cyan(),
                 name.bold(),
                 format!("unresolved ({err})").red().bold()
             );
@@ -140,7 +156,12 @@ pub async fn run<S: MetadataSource>(
     }
 
     // --- Findings ---
-    println!("{}", "── Findings ─────────────────────────────────────────────".bold().blue());
+    println!(
+        "{}",
+        "── Findings ─────────────────────────────────────────────"
+            .bold()
+            .cyan()
+    );
     if a.findings.is_empty() {
         println!("  {} Everything looks good.", "✓".green().bold());
     } else {
@@ -151,7 +172,7 @@ pub async fn run<S: MetadataSource>(
                 Severity::Info => "[INFO ]".cyan().bold(),
             };
             println!("  {tag} {}", f.title.bold());
-            println!("          {}", f.detail.dimmed());
+            println!("          {}", f.detail);
         }
     }
 
@@ -161,4 +182,3 @@ pub async fn run<S: MetadataSource>(
 
     Ok(())
 }
-

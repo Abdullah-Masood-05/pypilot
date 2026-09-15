@@ -1,6 +1,7 @@
 //! `pypilot setup` — full F1 bootstrap. Same engine as the LSP "Fix everything".
 
 use std::path::Path;
+
 use colored::Colorize;
 
 use crate::core::setup;
@@ -15,7 +16,7 @@ pub async fn run<S: MetadataSource>(
     println!(
         "{} — {} ({})",
         "PyPilot setup".bold().cyan(),
-        workspace.display().to_string().dimmed(),
+        workspace.display(),
         format!("{:?} mode", settings.package_manager).bold()
     );
 
@@ -24,7 +25,12 @@ pub async fn run<S: MetadataSource>(
     if !summary.why.is_empty() {
         println!("  {}", summary.why.cyan());
     }
-    println!("{}", "── Steps ────────────────────────────────────────────────".bold().blue());
+    println!(
+        "{}",
+        "── Steps ────────────────────────────────────────────────"
+            .bold()
+            .cyan()
+    );
 
     for step in &summary.steps {
         let mark = if step.ok {
@@ -35,7 +41,7 @@ pub async fn run<S: MetadataSource>(
         println!(
             "  {mark} {:<24} — {}",
             step.name.bold(),
-            truncate(&step.detail, 300).dimmed()
+            truncate(&step.detail, 300)
         );
     }
     println!();
@@ -52,7 +58,7 @@ pub async fn run<S: MetadataSource>(
             summary
                 .python
                 .map(|p| format!("Python {p}").cyan().bold().to_string())
-                .unwrap_or_else(|| "system interpreter".dimmed().to_string())
+                .unwrap_or_else(|| "system interpreter".to_string())
         );
         Ok(())
     } else {
@@ -69,4 +75,3 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{cut}…")
     }
 }
-

@@ -4,6 +4,7 @@
 //! install fails.
 
 use std::path::Path;
+
 use colored::Colorize;
 
 use crate::core::platform::Platform;
@@ -31,23 +32,24 @@ pub async fn run<S: MetadataSource>(
         analysis.name.bold(),
         format!("v{}", analysis.version).cyan()
     );
-    println!("{}", "── Package Details ──────────────────────────────────────".bold().blue());
+    println!(
+        "{}",
+        "── Package Details ──────────────────────────────────────"
+            .bold()
+            .cyan()
+    );
     println!(
         "  {:<18}: {}",
-        "supported Python".dimmed(),
+        "supported Python",
         analysis.supported.to_range_string().green().bold()
     );
     if let Some(rp) = &analysis.requires_python {
-        println!(
-            "  {:<18}: {}",
-            "requires-python".dimmed(),
-            rp.to_string().green()
-        );
+        println!("  {:<18}: {}", "requires-python", rp.to_string().green());
     }
     if analysis.sdist_only {
         println!(
             "  {:<18}: {}",
-            "wheels".dimmed(),
+            "wheels",
             "none for this platform, will compile from source".yellow()
         );
     }
@@ -56,7 +58,7 @@ pub async fn run<S: MetadataSource>(
     let present = installed::scan(&venv).contains(&analysis.name);
     println!(
         "  {:<18}: {}",
-        "installed".dimmed(),
+        "installed",
         if present {
             "yes".green().bold().to_string()
         } else {
@@ -64,7 +66,12 @@ pub async fn run<S: MetadataSource>(
         }
     );
 
-    println!("{}", "── Verdict ──────────────────────────────────────────────".bold().blue());
+    println!(
+        "{}",
+        "── Verdict ──────────────────────────────────────────────"
+            .bold()
+            .cyan()
+    );
     match probes.venv.as_ref().and_then(|v| v.python) {
         Some(current) if analysis.supported.contains(current) => {
             println!(
@@ -104,4 +111,3 @@ pub async fn run<S: MetadataSource>(
 
     Ok(())
 }
-
