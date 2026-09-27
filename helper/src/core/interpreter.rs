@@ -1,9 +1,10 @@
 //! Interpreter discovery.
 //!
 //! Probes the machine for CPython interpreters by trying the conventional
-//! command names in parallel and asking each for its version. Results are deduped
-//! by the interpreter's resolved `sys.executable` so `python` and `python3`
-//! pointing at the same binary count once.
+//! command names (plus the `py` launcher on Windows) in parallel and asking each
+//! for its version. Results are deduped by the interpreter's resolved
+//! `sys.executable` so `python` and `python3` pointing at the same binary count
+//! once.
 
 use std::collections::HashMap;
 
@@ -31,26 +32,34 @@ pub async fn discover() -> Vec<Interpreter> {
         candidates.push(format!("python3.{minor}"));
     }
 
-    let probes = candidates.into_iter().map(|cmd| async move {
-        let out = command::run(&cmd, &["-c", PROBE], None).await.ok()?;
-        if !out.success() {
-            return None;
-        }
-        let line = out.first_stdout_line()?;
-        let (ver, path) = line.split_once('\t')?;
-        let version = PyVersion::parse(ver)?;
+    let on_path = futures::future::join_all(candidates.into_iter().map(|cmd| async move {
+        let (version, path) = probe(&cmd, &[]).await?;
         Some(Interpreter {
             command: cmd,
-            path: path.trim().to_string(),
+            path,
             version,
         })
-    });
+    }));
 
-    let found = futures::future::join_all(probes).await;
+    // The python.org installers on Windows put at most one `python` on PATH and
+    // no `python3.X` names at all; every other version is only reachable
+    // through the `py` launcher.
+    let via_launcher =
+        futures::future::join_all(launcher_flags().into_iter().map(|flag| async move {
+            let (version, path) = probe("py", &[flag]).await?;
+            // The launcher only finds it. Later steps run the interpreter itself.
+            Some(Interpreter {
+                command: path.clone(),
+                path,
+                version,
+            })
+        }));
+
+    let (on_path, via_launcher) = tokio::join!(on_path, via_launcher);
 
     // Dedupe by resolved executable path, preferring the most specific command.
     let mut by_path: HashMap<String, Interpreter> = HashMap::new();
-    for interp in found.into_iter().flatten() {
+    for interp in on_path.into_iter().flatten() {
         by_path
             .entry(interp.path.clone())
             .and_modify(|existing| {
@@ -60,10 +69,40 @@ pub async fn discover() -> Vec<Interpreter> {
             })
             .or_insert(interp);
     }
+    // Launcher finds only fill gaps, so an interpreter that is also on PATH
+    // keeps its short command name.
+    for interp in via_launcher.into_iter().flatten() {
+        by_path.entry(interp.path.clone()).or_insert(interp);
+    }
 
     let mut list: Vec<Interpreter> = by_path.into_values().collect();
     list.sort_by_key(|i| std::cmp::Reverse(i.version));
     list
+}
+
+/// Run the version probe through `program`, with `prefix` ahead of `-c`.
+/// Returns the version and the interpreter's `sys.executable`.
+async fn probe(program: &str, prefix: &[String]) -> Option<(PyVersion, String)> {
+    let mut args: Vec<&str> = prefix.iter().map(String::as_str).collect();
+    args.extend(["-c", PROBE]);
+    let out = command::run(program, &args, None).await.ok()?;
+    if !out.success() {
+        return None;
+    }
+    let line = out.first_stdout_line()?;
+    let (ver, path) = line.split_once('\t')?;
+    Some((PyVersion::parse(ver)?, path.trim().to_string()))
+}
+
+/// `py -3.X` selectors to try. Empty off Windows, where there is no launcher.
+fn launcher_flags() -> Vec<String> {
+    if cfg!(windows) {
+        (MIN_MINOR..=MAX_MINOR)
+            .map(|minor| format!("-3.{minor}"))
+            .collect()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Find an interpreter matching an exact minor version (for pip-mode venv creation).
