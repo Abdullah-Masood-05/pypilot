@@ -78,16 +78,34 @@ impl PyPilotExtension {
             &zed::LanguageServerInstallationStatus::CheckingForUpdate,
         );
 
-        let release = zed::latest_github_release(
+        let (platform, arch) = zed::current_platform();
+        let asset = AssetSpec::for_platform(platform, arch)?;
+
+        let release = match zed::latest_github_release(
             HELPER_REPO,
             zed::GithubReleaseOptions {
                 require_assets: true,
                 pre_release: false,
             },
-        )?;
+        ) {
+            Ok(release) => release,
+            // Offline, or rate-limited by the GitHub API. A helper downloaded on
+            // an earlier launch still works, so start that one instead of
+            // failing the language server.
+            Err(e) => match find_downloaded_binary(asset.binary_name()) {
+                Some(path) => {
+                    eprintln!("pypilot: could not check for a newer helper ({e}); using {path}");
+                    zed::set_language_server_installation_status(
+                        language_server_id,
+                        &zed::LanguageServerInstallationStatus::None,
+                    );
+                    self.cached_binary_path = Some(path.clone());
+                    return Ok(path);
+                }
+                None => return Err(e),
+            },
+        };
 
-        let (platform, arch) = zed::current_platform();
-        let asset = AssetSpec::for_platform(platform, arch)?;
         let asset_name = asset.file_name();
 
         let github_asset = release
@@ -255,6 +273,24 @@ impl AssetSpec {
             zed::DownloadedFileType::GzipTar
         }
     }
+}
+
+/// A helper left in a `pypilot-*` install dir by an earlier download, if any.
+/// [`prune_old_versions`] keeps only one such dir around.
+fn find_downloaded_binary(binary_name: &str) -> Option<String> {
+    let entries = fs::read_dir(".").ok()?;
+    entries.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("pypilot-") {
+            return None;
+        }
+        let path = format!("{name}/{binary_name}");
+        fs::metadata(&path)
+            .map(|stat| stat.is_file())
+            .unwrap_or(false)
+            .then_some(path)
+    })
 }
 
 /// Remove any `pypilot-*` install dirs other than the one we just verified, so
