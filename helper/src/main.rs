@@ -12,7 +12,7 @@
 //!   * `doctor` — read-only probe report (nothing is executed/installed).
 //!   * `setup`  — full F1 bootstrap, honoring the `package_manager` setting.
 //!   * `lsp`    — stdio LSP server (the mode Zed launches).
-//!   * `check` / `fix` — reserved for later phases; print a friendly stub.
+//!   * `check`, `install`, `fix`, `update-data`, `migrate-conda` — see `--help`.
 //!
 //! Arg parsing is hand-rolled (no shell involvement anywhere) so every downstream
 //! spawned command uses arg vectors, never a shell string.
@@ -33,6 +33,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "doctor" | "setup" | "check" | "fix" | "install" | "update-data" | "migrate-conda" => {
+            // Consoles that predate Windows Terminal print ANSI escapes as
+            // literal text unless the process opts in to VT processing.
+            #[cfg(windows)]
+            let _ = colored::control::set_virtual_terminal(true);
+
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
