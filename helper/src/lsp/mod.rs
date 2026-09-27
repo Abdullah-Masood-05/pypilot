@@ -32,7 +32,7 @@ use crate::core::{
     guardian, install, installed, rescan, setup, solver, Assessment, FixKind, Severity,
 };
 use crate::pypi::pyversion::PyVersion;
-use crate::pypi::PyPiClient;
+use crate::pypi::{MetadataSource, PyPiClient};
 use crate::settings::{Notifications, PackageManager, ResolvedMode, Settings};
 
 use diagnostics::{CMD_INSTALL, CMD_RECREATE};
@@ -214,17 +214,29 @@ impl LanguageServer for Backend {
         let Some(root) = root else { return Ok(None) };
         let client = &self.shared.client;
 
-        match params.command.as_str() {
-            CMD_FIX => run_fix(client, &self.shared.source, &root).await,
-            CMD_DETAILS => show_details(client, &self.shared.source, &root).await,
-            CMD_NEVER => mark_never(client, &root).await,
-            CMD_IGNORE => {}
+        // Commands that change the environment answer `{"ok": bool}`. Zed
+        // ignores the result; the VS Code extension reads it so that a failed
+        // setup is not reported as a success.
+        let ok = match params.command.as_str() {
+            CMD_FIX => Some(run_fix(client, &self.shared.source, &root).await),
+            CMD_DETAILS => {
+                // An optional package argument adds a `pypilot check` section,
+                // which is how the VS Code "check package" command uses this.
+                let package = string_arg(&params.arguments, 0);
+                show_details(client, &self.shared.source, &root, package.as_deref()).await;
+                None
+            }
+            CMD_NEVER => {
+                mark_never(client, &root).await;
+                None
+            }
+            CMD_IGNORE => None,
 
             CMD_INSTALL => {
                 let Some(package) = string_arg(&params.arguments, 0) else {
                     return Ok(None);
                 };
-                run_install(self.shared.clone(), &root, &package).await;
+                Some(run_install(self.shared.clone(), &root, &package).await)
             }
 
             CMD_RECREATE => {
@@ -234,18 +246,19 @@ impl LanguageServer for Backend {
                 ) else {
                     return Ok(None);
                 };
-                run_recreate(self.shared.clone(), &root, &python, &package).await;
+                Some(run_recreate(self.shared.clone(), &root, &python, &package).await)
             }
 
-            CMD_INSTALL_UV | "pypilot.installUv" => run_install_uv(client).await,
+            CMD_INSTALL_UV | "pypilot.installUv" => Some(run_install_uv(client).await),
 
             other => {
                 client
                     .log_message(MessageType::WARNING, format!("unknown command `{other}`"))
                     .await;
+                None
             }
-        }
-        Ok(None)
+        };
+        Ok(ok.map(|ok| serde_json::json!({ "ok": ok })))
     }
 
     async fn shutdown(&self) -> RpcResult<()> {
@@ -321,7 +334,8 @@ fn venv_python(venv: &Path) -> Option<PyVersion> {
     crate::core::probe::parse_pyvenv_version(&text)
 }
 
-async fn run_install(shared: Arc<Shared>, root: &Path, package: &str) {
+/// Returns whether the package ended up installed.
+async fn run_install(shared: Arc<Shared>, root: &Path, package: &str) -> bool {
     let client = &shared.client;
     if install::validate_package_name(package).is_err() {
         client
@@ -330,7 +344,7 @@ async fn run_install(shared: Arc<Shared>, root: &Path, package: &str) {
                 format!("PyPilot: `{package}` is not a valid package name."),
             )
             .await;
-        return;
+        return false;
     }
 
     let settings = Settings::load(root);
@@ -338,23 +352,30 @@ async fn run_install(shared: Arc<Shared>, root: &Path, package: &str) {
         .show_message(MessageType::INFO, format!("PyPilot: installing {package}…"))
         .await;
 
-    match install::install_package(root, &settings, package).await {
+    let ok = match install::install_package(root, &settings, package).await {
         Ok(summary) if summary.ok => {
             client
                 .show_message(MessageType::INFO, format!("PyPilot: installed {package}."))
                 .await;
+            true
         }
-        Ok(summary) => report_failed_step(client, &summary).await,
+        Ok(summary) => {
+            report_failed_step(client, &summary).await;
+            false
+        }
         Err(e) => {
             client
                 .show_message(MessageType::ERROR, format!("PyPilot: install failed. {e}"))
                 .await;
+            false
         }
-    }
+    };
     refresh_all_buffers(shared).await;
+    ok
 }
 
-async fn run_recreate(shared: Arc<Shared>, root: &Path, python: &str, package: &str) {
+/// Returns whether the rebuild and the install both finished.
+async fn run_recreate(shared: Arc<Shared>, root: &Path, python: &str, package: &str) -> bool {
     let client = &shared.client;
     let Some(version) = PyVersion::parse(python) else {
         client
@@ -363,7 +384,7 @@ async fn run_recreate(shared: Arc<Shared>, root: &Path, python: &str, package: &
                 format!("PyPilot: `{python}` is not a Python version."),
             )
             .await;
-        return;
+        return false;
     };
     if install::validate_package_name(package).is_err() {
         client
@@ -372,7 +393,7 @@ async fn run_recreate(shared: Arc<Shared>, root: &Path, python: &str, package: &
                 format!("PyPilot: `{package}` is not a valid package name."),
             )
             .await;
-        return;
+        return false;
     }
 
     let settings = Settings::load(root);
@@ -383,7 +404,7 @@ async fn run_recreate(shared: Arc<Shared>, root: &Path, python: &str, package: &
         )
         .await;
 
-    match install::recreate_with_python(root, &settings, version, package).await {
+    let ok = match install::recreate_with_python(root, &settings, version, package).await {
         Ok(summary) if summary.ok => {
             client
                 .show_message(
@@ -393,15 +414,21 @@ async fn run_recreate(shared: Arc<Shared>, root: &Path, python: &str, package: &
                     ),
                 )
                 .await;
+            true
         }
-        Ok(summary) => report_failed_step(client, &summary).await,
+        Ok(summary) => {
+            report_failed_step(client, &summary).await;
+            false
+        }
         Err(e) => {
             client
                 .show_message(MessageType::ERROR, format!("PyPilot: rebuild failed. {e}"))
                 .await;
+            false
         }
-    }
+    };
     refresh_all_buffers(shared).await;
+    ok
 }
 
 async fn report_failed_step(client: &Client, summary: &setup::SetupSummary) {
@@ -508,14 +535,17 @@ async fn scan_and_notify(client: &Client, source: &PyPiClient, root: &Path, expl
         .flatten();
 
     match chosen.as_ref().map(|a| a.title.as_str()) {
-        Some(BTN_FIX) => run_fix(client, source, root).await,
-        Some(BTN_DETAILS) => show_details(client, source, root).await,
+        Some(BTN_FIX) => {
+            run_fix(client, source, root).await;
+        }
+        Some(BTN_DETAILS) => show_details(client, source, root, None).await,
         Some(BTN_NEVER) => mark_never(client, root).await,
         _ => {}
     }
 }
 
-async fn run_fix(client: &Client, source: &PyPiClient, root: &Path) {
+/// Returns whether the environment ended up set up.
+async fn run_fix(client: &Client, source: &PyPiClient, root: &Path) -> bool {
     let settings = Settings::load(root);
 
     let mode = if settings.package_manager == PackageManager::Auto
@@ -612,17 +642,23 @@ async fn run_fix(client: &Client, source: &PyPiClient, root: &Path) {
                     ),
                 )
                 .await;
+            true
         }
-        Ok(summary) => report_failed_step(client, &summary).await,
+        Ok(summary) => {
+            report_failed_step(client, &summary).await;
+            false
+        }
         Err(e) => {
             client
                 .show_message(MessageType::ERROR, format!("PyPilot: setup error. {e}"))
                 .await;
+            false
         }
     }
 }
 
-async fn run_install_uv(client: &Client) {
+/// Returns whether uv is installed afterwards.
+async fn run_install_uv(client: &Client) -> bool {
     if let Some(info) = crate::core::uv::is_system_installed().await {
         client
             .show_message(
@@ -633,7 +669,7 @@ async fn run_install_uv(client: &Client) {
                 ),
             )
             .await;
-        return;
+        return true;
     }
     client
         .show_message(MessageType::INFO, "PyPilot: installing uv globally…")
@@ -650,6 +686,7 @@ async fn run_install_uv(client: &Client) {
                     ),
                 )
                 .await;
+            true
         }
         Err(e) => {
             client
@@ -658,14 +695,18 @@ async fn run_install_uv(client: &Client) {
                     format!("PyPilot: global uv install failed: {e}"),
                 )
                 .await;
+            false
         }
     }
 }
 
-async fn show_details(client: &Client, source: &PyPiClient, root: &Path) {
+async fn show_details(client: &Client, source: &PyPiClient, root: &Path, package: Option<&str>) {
     let settings = Settings::load(root);
     let assessment = solver::assess(root, &settings, source).await;
-    let report = details_markdown(&assessment);
+    let mut report = details_markdown(&assessment);
+    if let Some(package) = package {
+        report.push_str(&package_check_markdown(source, &assessment, package).await);
+    }
 
     let path = std::env::temp_dir().join("pypilot-report.md");
     if std::fs::write(&path, &report).is_ok() {
@@ -816,6 +857,60 @@ fn details_markdown(a: &Assessment) -> String {
             s.push('\n');
         }
     }
+    s
+}
+
+/// The `pypilot check <package>` answer, as a report section.
+async fn package_check_markdown(source: &PyPiClient, a: &Assessment, package: &str) -> String {
+    let mut s = format!("\n## Check: {package}\n");
+    // Accept what a user would type into requirements.txt, e.g. `numpy>=2`.
+    let Some(name) = crate::core::project::requirement_name(package) else {
+        s.push_str(&format!("`{package}` is not a package name.\n"));
+        return s;
+    };
+    let meta = match source.fetch(&name).await {
+        Ok(meta) => meta,
+        Err(e) => {
+            s.push_str(&format!("PyPI has no usable metadata for `{name}`: {e}\n"));
+            return s;
+        }
+    };
+
+    let analysis = meta.analyze(&Platform::current());
+    s.push_str(&format!("- Latest release: **{}**\n", analysis.version));
+    s.push_str(&format!(
+        "- Supported Python: **{}**\n",
+        analysis.supported.to_range_string()
+    ));
+    if analysis.sdist_only {
+        s.push_str("- No wheel for this platform, so it will compile from source\n");
+    }
+
+    let verdict = match a.probes.venv.as_ref().and_then(|v| v.python) {
+        Some(current) if analysis.supported.contains(current) => {
+            format!("This project's Python {current} can run {}.", analysis.name)
+        }
+        Some(current) => {
+            let suggestion = analysis
+                .supported
+                .max()
+                .map(|t| format!(" Use Python {t} instead."))
+                .unwrap_or_default();
+            format!(
+                "{} does not support this project's Python {current}.{suggestion}",
+                analysis.name
+            )
+        }
+        None => {
+            let suggestion = analysis
+                .supported
+                .max()
+                .map(|t| format!(" Python {t} would suit it."))
+                .unwrap_or_default();
+            format!("This project has no virtual environment yet.{suggestion}")
+        }
+    };
+    s.push_str(&format!("\n{verdict}\n"));
     s
 }
 
