@@ -218,7 +218,9 @@ async fn download_managed(platform: Platform) -> crate::Result<UvInfo> {
         if let Some(parent) = canonical.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
-        tokio::fs::copy(&binary, &canonical).await.ok();
+        tokio::fs::copy(&binary, &canonical)
+            .await
+            .with_context(|| format!("copying uv to {}", canonical.display()))?;
         #[cfg(unix)]
         make_executable(&canonical)?;
     }
