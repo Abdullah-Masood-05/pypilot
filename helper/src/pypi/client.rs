@@ -68,16 +68,25 @@ impl MetadataSource for PyPiClient {
             return Ok(meta);
         }
 
-        // 2. Network.
+        // 2. Network. When PyPI is unreachable, an expired entry is still
+        // better than calling the package unresolvable.
         let url = format!("{}/{}/json", self.base_url, name);
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("requesting metadata for `{name}`"))?;
+        let resp = match self.http.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                if let Some(meta) = self.cache.get_latest_stale(name) {
+                    return Ok(meta);
+                }
+                return Err(e).with_context(|| format!("requesting metadata for `{name}`"));
+            }
+        };
 
         if !resp.status().is_success() {
+            if resp.status().is_server_error() {
+                if let Some(meta) = self.cache.get_latest_stale(name) {
+                    return Ok(meta);
+                }
+            }
             anyhow::bail!("PyPI returned {} for `{name}`", resp.status());
         }
 

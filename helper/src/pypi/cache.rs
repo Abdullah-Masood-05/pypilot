@@ -76,14 +76,24 @@ impl Cache {
 
     /// Return cached latest metadata if present and within the 24h TTL.
     pub fn get_latest(&self, name: &str) -> Option<PackageMetadata> {
-        let path = self.latest_path(name)?;
-        let text = std::fs::read_to_string(&path).ok()?;
-        let cached: CachedLatest = serde_json::from_str(&text).ok()?;
+        let cached = self.read_latest(name)?;
         if now_unix().saturating_sub(cached.fetched_at_unix) <= LATEST_TTL_SECS {
             Some(cached.metadata)
         } else {
             None
         }
+    }
+
+    /// Cached latest metadata whatever its age. Only for when PyPI cannot be
+    /// reached: a day-old answer beats reporting the package as unresolvable.
+    pub fn get_latest_stale(&self, name: &str) -> Option<PackageMetadata> {
+        self.read_latest(name).map(|cached| cached.metadata)
+    }
+
+    fn read_latest(&self, name: &str) -> Option<CachedLatest> {
+        let path = self.latest_path(name)?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     /// Return immutable per-release metadata if we've ever fetched this version.
@@ -190,6 +200,21 @@ mod tests {
             .get_release("mediapipe", "0.10.14")
             .expect("the older release is retrievable on its own");
         assert_eq!(pinned.info.version, "0.10.14");
+    }
+
+    #[test]
+    fn expired_latest_is_only_served_as_the_offline_fallback() {
+        let cache = scratch("stale");
+        let path = cache.latest_path("mediapipe").unwrap();
+        let expired = CachedLatest {
+            fetched_at_unix: now_unix() - LATEST_TTL_SECS - 60,
+            metadata: meta("0.10.35"),
+        };
+        write_json(&path, &expired, true);
+
+        assert!(cache.get_latest("mediapipe").is_none());
+        let stale = cache.get_latest_stale("mediapipe").expect("stale entry");
+        assert_eq!(stale.info.version, "0.10.35");
     }
 
     #[test]
