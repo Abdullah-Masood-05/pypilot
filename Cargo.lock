@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "pypilot-helper"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "colored",
