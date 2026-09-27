@@ -74,7 +74,7 @@ pub fn scan(workspace: &Path) -> ProjectDeps {
 
     let pyproject = workspace.join("pyproject.toml");
     if pyproject.is_file() {
-        if let Ok(text) = std::fs::read_to_string(&pyproject) {
+        if let Some(text) = read_manifest(&pyproject) {
             let (pkgs, rp) = parse_pyproject(&text);
             names.extend(pkgs);
             deps.declared_requires_python = rp;
@@ -84,7 +84,7 @@ pub fn scan(workspace: &Path) -> ProjectDeps {
 
     let requirements = workspace.join("requirements.txt");
     if requirements.is_file() {
-        if let Ok(text) = std::fs::read_to_string(&requirements) {
+        if let Some(text) = read_manifest(&requirements) {
             names.extend(parse_requirements(&text));
             deps.sources.push(requirements);
         }
@@ -92,7 +92,7 @@ pub fn scan(workspace: &Path) -> ProjectDeps {
 
     let env_yml = workspace.join("environment.yml");
     if env_yml.is_file() {
-        if let Ok(text) = std::fs::read_to_string(&env_yml) {
+        if let Some(text) = read_manifest(&env_yml) {
             let (pkgs, py) = parse_environment_yml(&text);
             names.extend(pkgs);
             deps.conda_python = py;
@@ -137,9 +137,14 @@ pub fn normalize_name(name: &str) -> String {
 pub fn parse_requirement(line: &str) -> Option<Requirement> {
     let name = requirement_name(line)?;
 
-    let line = line.trim();
+    let line = strip_inline_comment(line.trim());
     // Cut the marker first so `; python_version<'3.10'` is not read as a bound.
     let without_marker = line.split(';').next().unwrap_or(line);
+    // A direct reference (`name @ url`) names its artifact outright, and an `=`
+    // inside the URL is not a version bound.
+    if without_marker.contains('@') {
+        return Some(Requirement::any(name));
+    }
     // Then drop extras, whose brackets can contain commas.
     let without_extras = match (without_marker.find('['), without_marker.find(']')) {
         (Some(open), Some(close)) if close > open => {
@@ -171,11 +176,7 @@ pub fn requirement_name(line: &str) -> Option<String> {
     if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
         return None;
     }
-    // Strip an inline comment (only when preceded by whitespace, per pip rules).
-    let line = match line.find(" #") {
-        Some(i) => &line[..i],
-        None => line,
-    };
+    let line = strip_inline_comment(line);
     // Direct URL / VCS references: "name @ url" keeps the name; bare URLs are skipped.
     if let Some(idx) = line.find('@') {
         let name = line[..idx].trim();
@@ -201,6 +202,42 @@ pub fn requirement_name(line: &str) -> Option<String> {
         return None;
     }
     Some(normalize_name(name))
+}
+
+/// Cut an inline comment. Per pip's rules a `#` only starts one when whitespace
+/// precedes it, so a URL fragment like `#egg=name` survives.
+fn strip_inline_comment(line: &str) -> &str {
+    match line
+        .as_bytes()
+        .windows(2)
+        .position(|w| w[0].is_ascii_whitespace() && w[1] == b'#')
+    {
+        Some(i) => line[..i].trim_end(),
+        None => line,
+    }
+}
+
+/// Read a manifest as text, whatever encoding Windows tooling left it in.
+///
+/// In Windows PowerShell 5, `pip freeze > requirements.txt` writes UTF-16LE with
+/// a byte-order mark, and some editors prefix UTF-8 with one. A plain
+/// `read_to_string` rejects the first file outright and turns the second one's
+/// first package name into one that starts with an invisible character.
+fn read_manifest(path: &Path) -> Option<String> {
+    decode_text(std::fs::read(path).ok()?)
+}
+
+fn decode_text(bytes: Vec<u8>) -> Option<String> {
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
+        let units: Vec<u16> = rest.chunks_exact(2).map(|c| unit([c[0], c[1]])).collect();
+        String::from_utf16(&units).ok()
+    };
+    match bytes.as_slice() {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8(rest.to_vec()).ok(),
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        _ => String::from_utf8(bytes).ok(),
+    }
 }
 
 fn strip_extras(name: &str) -> &str {
@@ -519,6 +556,49 @@ mod tests {
         assert_eq!(requirement_name("# a comment"), None);
         assert_eq!(requirement_name("-r base.txt"), None);
         assert_eq!(requirement_name(""), None);
+    }
+
+    #[test]
+    fn inline_comments_stay_out_of_the_specifier() {
+        assert_eq!(
+            parse_requirement("numpy==1.26.4  # pinned for torch"),
+            Some(req("numpy", "==1.26.4"))
+        );
+        assert_eq!(
+            parse_requirement("numpy>=1.24\t# tab-separated"),
+            Some(req("numpy", ">=1.24"))
+        );
+    }
+
+    #[test]
+    fn direct_references_carry_no_version_bound() {
+        assert_eq!(
+            parse_requirement("demo @ https://example.com/demo.whl?sig=abc"),
+            Some(req("demo", ""))
+        );
+        assert_eq!(
+            parse_requirement("demo @ git+https://example.com/demo.git#egg=demo"),
+            Some(req("demo", ""))
+        );
+    }
+
+    #[test]
+    fn manifests_decode_through_a_byte_order_mark() {
+        let utf8_bom = b"\xEF\xBB\xBFnumpy==1.26.4\n".to_vec();
+        assert_eq!(decode_text(utf8_bom).as_deref(), Some("numpy==1.26.4\n"));
+
+        // What Windows PowerShell 5 writes for `pip freeze > requirements.txt`.
+        let mut utf16le = vec![0xFF, 0xFE];
+        utf16le.extend(
+            "numpy==1.26.4\r\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
+        let text = decode_text(utf16le).unwrap();
+        assert_eq!(parse_requirements(&text), vec![req("numpy", "==1.26.4")]);
+
+        assert_eq!(decode_text(b"plain".to_vec()).as_deref(), Some("plain"));
+        assert_eq!(decode_text(vec![0xC3]), None);
     }
 
     #[test]
