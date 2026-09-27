@@ -318,16 +318,7 @@ async fn refresh_all_buffers(shared: Arc<Shared>) {
 /// Read the venv's Python version from `pyvenv.cfg`.
 fn venv_python(venv: &Path) -> Option<PyVersion> {
     let text = std::fs::read_to_string(venv.join("pyvenv.cfg")).ok()?;
-    for line in text.lines() {
-        let mut parts = line.splitn(2, '=');
-        let key = parts.next()?.trim();
-        if key == "version" || key == "version_info" {
-            if let Some(v) = parts.next().and_then(|v| PyVersion::parse(v.trim())) {
-                return Some(v);
-            }
-        }
-    }
-    None
+    crate::core::probe::parse_pyvenv_version(&text)
 }
 
 async fn run_install(shared: Arc<Shared>, root: &Path, package: &str) {

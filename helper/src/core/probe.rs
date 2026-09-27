@@ -59,7 +59,7 @@ async fn detect_venv(workspace: &Path) -> Option<VenvInfo> {
 }
 
 /// Parse `version = 3.12.1` (or `version_info`) out of a `pyvenv.cfg`.
-fn parse_pyvenv_version(text: &str) -> Option<PyVersion> {
+pub(crate) fn parse_pyvenv_version(text: &str) -> Option<PyVersion> {
     for line in text.lines() {
         let line = line.trim();
         let key = line.split('=').next().map(str::trim).unwrap_or("");
