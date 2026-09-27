@@ -58,12 +58,18 @@ const BTN_MODE_PIP_COMPAT: &str = "pip-compatible (requirements.txt, faster via 
 /// How long the buffer must be idle before the guardian runs.
 const IDLE_DEBOUNCE: Duration = Duration::from_secs(1);
 
+/// An open buffer, as of the client's latest version of it.
+struct Document {
+    version: i32,
+    text: String,
+}
+
 /// State shared between request handlers and spawned background tasks.
 struct Shared {
     client: Client,
     root: Mutex<Option<PathBuf>>,
-    /// Open buffer contents, by URI.
-    documents: Mutex<HashMap<Url, String>>,
+    /// Open buffers, by URI.
+    documents: Mutex<HashMap<Url, Document>>,
     /// Edit counter per buffer. A debounced run compares against this and exits
     /// if the buffer moved on, which is the whole cancellation mechanism.
     revisions: Mutex<HashMap<Url, u64>>,
@@ -122,22 +128,40 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        let text = params.text_document.text;
-        self.shared.documents.lock().await.insert(uri.clone(), text);
-        run_guardian(self.shared.clone(), uri).await;
-    }
-
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri;
-        // FULL sync: the last content change is the whole document.
-        let Some(change) = params.content_changes.into_iter().next_back() else {
-            return;
+        let document = Document {
+            version: params.text_document.version,
+            text: params.text_document.text,
         };
         self.shared
             .documents
             .lock()
             .await
-            .insert(uri.clone(), change.text);
+            .insert(uri.clone(), document);
+        run_guardian(self.shared.clone(), uri).await;
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let uri = params.text_document.uri;
+        let version = params.text_document.version;
+        // FULL sync: the last content change is the whole document.
+        let Some(change) = params.content_changes.into_iter().next_back() else {
+            return;
+        };
+        {
+            let mut documents = self.shared.documents.lock().await;
+            // tower-lsp runs notifications concurrently, so two quick edits can
+            // be handled out of order. Never let the older text win.
+            if documents.get(&uri).is_some_and(|d| d.version >= version) {
+                return;
+            }
+            documents.insert(
+                uri.clone(),
+                Document {
+                    version,
+                    text: change.text,
+                },
+            );
+        }
 
         let revision = {
             let mut revisions = self.shared.revisions.lock().await;
@@ -241,7 +265,13 @@ async fn run_guardian(shared: Arc<Shared>, uri: Url) {
     let Some(root) = shared.root.lock().await.clone() else {
         return;
     };
-    let Some(text) = shared.documents.lock().await.get(&uri).cloned() else {
+    let Some(text) = shared
+        .documents
+        .lock()
+        .await
+        .get(&uri)
+        .map(|d| d.text.clone())
+    else {
         return;
     };
 
