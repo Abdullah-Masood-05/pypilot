@@ -6,8 +6,22 @@
 
 use std::ffi::OsStr;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::process::Command;
+
+/// Set once by the LSP entry point. See [`hide_child_consoles`].
+static HIDE_CONSOLES: AtomicBool = AtomicBool::new(false);
+
+/// Stop spawned processes from opening console windows (Windows only).
+///
+/// Editors start the language server without a console, so on Windows every
+/// console program it spawns (python, uv, nvidia-smi) would otherwise get a
+/// fresh window that flashes up and vanishes. The CLI keeps the default: there
+/// the children share the user's terminal, which is what lets Ctrl+C reach them.
+pub fn hide_child_consoles() {
+    HIDE_CONSOLES.store(true, Ordering::Relaxed);
+}
 
 /// Captured result of running a process.
 #[derive(Debug, Clone)]
@@ -45,6 +59,11 @@ where
     }
     // Keep child stdio off our own; capture instead.
     cmd.stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    if HIDE_CONSOLES.load(Ordering::Relaxed) {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     let out = cmd.output().await.map_err(|e| {
         anyhow::anyhow!(

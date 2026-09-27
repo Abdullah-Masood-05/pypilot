@@ -812,6 +812,8 @@ fn workspace_root(params: &InitializeParams) -> Option<PathBuf> {
 
 /// Entry point for `pypilot lsp`.
 pub fn run_stdio() {
+    crate::core::command::hide_child_consoles();
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
