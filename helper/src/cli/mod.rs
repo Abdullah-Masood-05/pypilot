@@ -35,7 +35,9 @@ pub async fn dispatch(mode: &str, args: &[String]) -> crate::Result<()> {
 
         "fix" => {
             let what = positional(args).unwrap_or_else(|| "python".to_string());
-            fix::run(&workspace, &settings, &source, &what).await
+            let result = fix::run(&workspace, &settings, &source, &what).await;
+            crate::core::rescan::notify(&workspace, crate::core::rescan::Kind::Setup);
+            result
         }
 
         "install" => {
