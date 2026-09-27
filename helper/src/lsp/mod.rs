@@ -111,7 +111,13 @@ impl LanguageServer for Backend {
             return;
         };
         tokio::spawn(watch_rescan_requests(self.shared.clone(), root.clone()));
-        scan_and_notify(&self.shared.client, &self.shared.source, &root, false).await;
+        // The onboarding toast waits on the user, possibly forever. tower-lsp
+        // handles only a few messages at once, so awaiting it here would hold
+        // one of those slots for as long as the toast stays unanswered.
+        let shared = self.shared.clone();
+        tokio::spawn(async move {
+            scan_and_notify(&shared.client, &shared.source, &root, false).await;
+        });
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
